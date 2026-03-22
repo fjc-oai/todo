@@ -3,14 +3,27 @@ import "./App.css";
 
 const API = import.meta.env.VITE_API_URL || "/api";
 
-const NAV_ITEMS = [
-  { id: "dashboard", label: "Command Center", description: "Today, due, blocked" },
-  { id: "work", label: "Work", description: "Open work tasks" },
-  { id: "life", label: "Life", description: "Open life tasks" },
-  { id: "blocked", label: "Blocked", description: "Reactive follow-up items" },
-  { id: "deadlines", label: "Deadlines", description: "Date-driven commitments" },
-  { id: "backlog", label: "Backlog", description: "Captured, not active yet" },
-  { id: "all", label: "All Open", description: "Full open inventory" },
+const PRIMARY_TABS = [
+  {
+    id: "today",
+    label: "Today",
+  },
+  {
+    id: "all",
+    label: "All Tasks",
+  },
+];
+
+const AREA_TABS = [
+  { id: "work", label: "Work" },
+  { id: "life", label: "Life" },
+];
+
+const TYPE_TABS = [
+  { id: "main", label: "Main" },
+  { id: "blocked", label: "Blocked" },
+  { id: "deadline", label: "Deadline" },
+  { id: "backlog", label: "Backlog" },
 ];
 
 const CHECKBACK_OPTIONS = [
@@ -23,7 +36,9 @@ const CHECKBACK_OPTIONS = [
 
 function App() {
   const [tasks, setTasks] = useState([]);
-  const [view, setView] = useState("dashboard");
+  const [primaryTab, setPrimaryTab] = useState("today");
+  const [areaTab, setAreaTab] = useState("work");
+  const [typeTab, setTypeTab] = useState("main");
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [captureTitle, setCaptureTitle] = useState("");
   const [captureArea, setCaptureArea] = useState("work");
@@ -146,6 +161,9 @@ function App() {
   const backlogTasks = sortTasks(
     rootTasks.filter((task) => task.status === "open" && task.taskType === "backlog"),
   );
+  const mainTasks = sortTasks(
+    rootTasks.filter((task) => task.status === "open" && task.taskType === "main"),
+  );
   const blockedTasks = sortTasks(
     rootTasks.filter((task) => task.status === "open" && task.taskType === "blocked"),
   );
@@ -155,8 +173,33 @@ function App() {
   const dueSoonTasks = sortTasks(
     deadlineTasks.filter((task) => isOverdue(task.dueAt) || isWithinDays(task.dueAt, 7)),
   );
-  const todayTasks = sortTasks(
-    rootTasks.filter((task) => task.status === "open" && task.plannedFor === todayKey),
+  const todayWorkTasks = sortTasks(
+    rootTasks.filter(
+      (task) =>
+        task.status === "open" &&
+        task.plannedFor === todayKey &&
+        task.area === "work" &&
+        task.taskType !== "blocked" &&
+        task.taskType !== "deadline",
+    ),
+  );
+  const todayLifeTasks = sortTasks(
+    rootTasks.filter(
+      (task) =>
+        task.status === "open" &&
+        task.plannedFor === todayKey &&
+        task.area === "life" &&
+        task.taskType !== "blocked" &&
+        task.taskType !== "deadline",
+    ),
+  );
+  const blockedTodayTasks = sortTasks(
+    blockedTasks.filter(
+      (task) => !task.followUpAt || isOnOrBefore(task.followUpAt, getEndOfLocalDay(new Date())),
+    ),
+  );
+  const deadlineTodayTasks = sortTasks(
+    deadlineTasks.filter((task) => task.dueAt && (isOverdue(task.dueAt) || isWithinDays(task.dueAt, 2))),
   );
   const workTasks = sortTasks(
     rootTasks.filter((task) => task.area === "work" && task.status === "open"),
@@ -169,6 +212,11 @@ function App() {
   const searchResults = normalizedQuery
     ? sortTasks(rootTasks.filter((task) => matchesTask(task, normalizedQuery)))
     : [];
+  const todayCount =
+    todayWorkTasks.length +
+    todayLifeTasks.length +
+    blockedTodayTasks.length +
+    deadlineTodayTasks.length;
 
   async function handleCreateTask(event) {
     event.preventDefault();
@@ -189,7 +237,8 @@ function App() {
     if (task) {
       setCaptureTitle("");
       setSelectedTaskId(task.id);
-      setView("backlog");
+      setPrimaryTab("types");
+      setTypeTab("backlog");
       setSearchQuery("");
     }
   }
@@ -231,7 +280,7 @@ function App() {
   }
 
   const metrics = [
-    { label: "Today", value: todayTasks.length, tone: "accent" },
+    { label: "Today", value: todayCount, tone: "accent" },
     { label: "Blocked", value: blockedTasks.length, tone: "neutral" },
     { label: "Deadlines", value: dueSoonTasks.length, tone: dueSoonTasks.length > 0 ? "warning" : "neutral" },
     { label: "Backlog", value: backlogTasks.length, tone: "neutral" },
@@ -241,47 +290,84 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <p className="eyebrow">Single-player task cockpit</p>
           <h1>External Brain</h1>
           <p className="sidebar-copy">
-            Keep the list simple. Decide what is active, what is blocked, what can wait, and what is finished.
+            Decide today, and let the system carry the rest of the mental load.
           </p>
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary">
-          {NAV_ITEMS.map((item) => (
+          {PRIMARY_TABS.map((tab) => (
             <button
-              key={item.id}
-              className={`nav-item ${view === item.id ? "nav-item--active" : ""}`}
+              key={tab.id}
+              className={`nav-item ${primaryTab === tab.id ? "nav-item--active" : ""}`}
               onClick={() => {
-                setView(item.id);
+                setPrimaryTab(tab.id);
                 setSearchQuery("");
               }}
               type="button"
             >
               <span className="nav-item__copy">
-                <span className="nav-item__label">{item.label}</span>
-                <span className="nav-item__description">{item.description}</span>
+                <span className="nav-item__label">{tab.label}</span>
               </span>
               <span className="nav-item__count">
-                {getNavCount(item.id, openRootTasks, workTasks, lifeTasks, blockedTasks, deadlineTasks, backlogTasks)}
+                {tab.id === "today" ? todayCount : openRootTasks.length}
               </span>
             </button>
           ))}
-        </nav>
 
-        <div className="sidebar-footer">
-          <p className="eyebrow">Shortcuts</p>
-          <p>
-            <kbd>N</kbd> quick capture
-          </p>
-          <p>
-            <kbd>/</kbd> search
-          </p>
-          <p>
-            <kbd>Esc</kbd> close detail
-          </p>
-        </div>
+          <div className="nav-group">
+            <div className="nav-section-row" aria-hidden="true">
+              <span className="nav-item__label">Areas</span>
+            </div>
+            <div className="nav-subtabs" aria-label="Area views">
+              {AREA_TABS.map((subtab) => (
+                <button
+                  key={subtab.id}
+                  className={`nav-subitem ${primaryTab === "areas" && areaTab === subtab.id ? "nav-subitem--active" : ""}`}
+                  onClick={() => {
+                    setPrimaryTab("areas");
+                    setAreaTab(subtab.id);
+                    setSearchQuery("");
+                  }}
+                  type="button"
+                >
+                  <span className="nav-item__copy">
+                    <span className="nav-item__label">{subtab.label}</span>
+                  </span>
+                  <span className="nav-item__count">{subtab.id === "work" ? workTasks.length : lifeTasks.length}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="nav-group">
+            <div className="nav-section-row" aria-hidden="true">
+              <span className="nav-item__label">Types</span>
+            </div>
+            <div className="nav-subtabs" aria-label="Type views">
+              {TYPE_TABS.map((subtab) => (
+                <button
+                  key={subtab.id}
+                  className={`nav-subitem ${primaryTab === "types" && typeTab === subtab.id ? "nav-subitem--active" : ""}`}
+                  onClick={() => {
+                    setPrimaryTab("types");
+                    setTypeTab(subtab.id);
+                    setSearchQuery("");
+                  }}
+                  type="button"
+                >
+                  <span className="nav-item__copy">
+                    <span className="nav-item__label">{subtab.label}</span>
+                  </span>
+                  <span className="nav-item__count">
+                    {getTypeCount(subtab.id, mainTasks, blockedTasks, deadlineTasks, backlogTasks)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </nav>
       </aside>
 
       <main className="workspace">
@@ -361,71 +447,97 @@ function App() {
             title="Search"
             todayKey={todayKey}
           />
-        ) : view === "dashboard" ? (
+        ) : primaryTab === "today" ? (
           <div className="dashboard-grid">
             <TaskCollection
-              description="The few tasks you have deliberately pulled into today."
+              description="Work tasks you deliberately chose to move today."
               emptyState="Nothing selected for today yet."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={todayTasks}
-              title="Today"
+              tasks={todayWorkTasks}
+              title="Work"
               todayKey={todayKey}
             />
 
             <TaskCollection
-              description="Deadlines that can become expensive if ignored."
-              emptyState="No deadlines in the danger window."
+              description="Life tasks you deliberately chose to move today."
+              emptyState="No life tasks selected for today."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={dueSoonTasks}
-              title="Due Soon"
+              tasks={todayLifeTasks}
+              title="Life"
               todayKey={todayKey}
             />
 
             <TaskCollection
-              description="Tasks blocked on time, CI, or someone else."
-              emptyState="No blocked items right now."
+              description="Blocked tasks whose check back is due by the end of today."
+              emptyState="No blocked tasks to revisit today."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={blockedTasks}
+              tasks={blockedTodayTasks}
               title="Blocked"
               todayKey={todayKey}
             />
 
             <TaskCollection
-              description="Things worth keeping without making them active."
-              emptyState="Backlog is empty."
+              description="Deadlines that are overdue or due within the next two days."
+              emptyState="No deadlines demanding attention today."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={backlogTasks}
-              title="Backlog"
+              tasks={deadlineTodayTasks}
+              title="Deadlines"
               todayKey={todayKey}
             />
           </div>
-        ) : (
+        ) : primaryTab === "all" ? (
           <TaskCollection
-            description={getViewDescription(view)}
-            emptyState={getViewEmptyState(view)}
+            description="Every open top-level task. Use Today on a card to plan the day."
+            emptyState="No open tasks."
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
             onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
             selectedTaskId={selectedTaskId}
-            tasks={getViewTasks(view, openRootTasks, workTasks, lifeTasks, blockedTasks, deadlineTasks, backlogTasks)}
-            title={getViewTitle(view)}
+            tasks={openRootTasks}
+            title="All Tasks"
+            todayKey={todayKey}
+          />
+        ) : primaryTab === "areas" ? (
+          <TaskCollection
+            description={getAreaDescription(areaTab)}
+            emptyState={getAreaEmptyState(areaTab)}
+            onSelect={setSelectedTaskId}
+            onSetStatus={handleSetTaskStatus}
+            onSetTaskType={handleSetTaskType}
+            onToggleToday={handleToggleToday}
+            selectedTaskId={selectedTaskId}
+            tasks={areaTab === "work" ? workTasks : lifeTasks}
+            title={areaTab === "work" ? "Work" : "Life"}
+            todayKey={todayKey}
+          />
+        ) : (
+          <TaskCollection
+            description={getTypeDescription(typeTab)}
+            emptyState={getTypeEmptyState(typeTab)}
+            onSelect={setSelectedTaskId}
+            onSetStatus={handleSetTaskStatus}
+            onSetTaskType={handleSetTaskType}
+            onToggleToday={handleToggleToday}
+            selectedTaskId={selectedTaskId}
+            tasks={getTypeTasks(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTasks)}
+            title={formatTaskType(typeTab)}
             todayKey={todayKey}
           />
         )}
@@ -801,108 +913,85 @@ function toApiTaskPayload(task) {
   return payload;
 }
 
-function getNavCount(viewId, openRootTasks, workTasks, lifeTasks, blockedTasks, deadlineTasks, backlogTasks) {
-  switch (viewId) {
-    case "dashboard":
-      return openRootTasks.length;
-    case "work":
-      return workTasks.length;
-    case "life":
-      return lifeTasks.length;
+function getTypeCount(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTasks) {
+  switch (typeTab) {
+    case "main":
+      return mainTasks.length;
     case "blocked":
       return blockedTasks.length;
-    case "deadlines":
+    case "deadline":
       return deadlineTasks.length;
     case "backlog":
       return backlogTasks.length;
-    case "all":
-      return openRootTasks.length;
     default:
       return 0;
   }
 }
 
-function getViewTitle(viewId) {
-  switch (viewId) {
-    case "dashboard":
-      return "Command Center";
-    case "work":
-      return "Work";
-    case "life":
-      return "Life";
-    case "blocked":
-      return "Blocked";
-    case "deadlines":
-      return "Deadlines";
-    case "backlog":
-      return "Backlog";
-    case "all":
-      return "All Open";
-    default:
-      return "Tasks";
-  }
-}
-
-function getViewDescription(viewId) {
-  switch (viewId) {
-    case "dashboard":
-      return "Your high-signal command center.";
+function getAreaDescription(areaTab) {
+  switch (areaTab) {
     case "work":
       return "Open work tasks across main, blocked, backlog, and deadlines.";
     case "life":
       return "Open life tasks that should not disappear.";
-    case "blocked":
-      return "Tasks blocked on time, CI, or someone else.";
-    case "deadlines":
-      return "Tasks with a real due date.";
-    case "backlog":
-      return "Tasks worth keeping without making them active.";
-    case "all":
-      return "Every open top-level task in one place.";
     default:
       return "";
   }
 }
 
-function getViewEmptyState(viewId) {
-  switch (viewId) {
-    case "dashboard":
-      return "Nothing to show.";
+function getAreaEmptyState(areaTab) {
+  switch (areaTab) {
     case "work":
       return "No open work tasks.";
     case "life":
       return "No open life tasks.";
-    case "blocked":
-      return "No blocked tasks.";
-    case "deadlines":
-      return "No deadlines on the board.";
-    case "backlog":
-      return "No backlog tasks.";
-    case "all":
-      return "No open tasks.";
     default:
       return "Nothing here.";
   }
 }
 
-function getViewTasks(viewId, openRootTasks, workTasks, lifeTasks, blockedTasks, deadlineTasks, backlogTasks) {
-  switch (viewId) {
-    case "dashboard":
-      return openRootTasks;
-    case "work":
-      return workTasks;
-    case "life":
-      return lifeTasks;
+function getTypeDescription(typeTab) {
+  switch (typeTab) {
+    case "main":
+      return "Tasks you want to actively move forward.";
+    case "blocked":
+      return "Tasks blocked on time, CI, or someone else.";
+    case "deadline":
+      return "Tasks with a real due date.";
+    case "backlog":
+      return "Tasks worth keeping without making them active.";
+    default:
+      return "";
+  }
+}
+
+function getTypeEmptyState(typeTab) {
+  switch (typeTab) {
+    case "main":
+      return "No main tasks.";
+    case "blocked":
+      return "No blocked tasks.";
+    case "deadline":
+      return "No deadlines on the board.";
+    case "backlog":
+      return "No backlog tasks.";
+    default:
+      return "Nothing here.";
+  }
+}
+
+function getTypeTasks(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTasks) {
+  switch (typeTab) {
+    case "main":
+      return mainTasks;
     case "blocked":
       return blockedTasks;
-    case "deadlines":
+    case "deadline":
       return deadlineTasks;
     case "backlog":
       return backlogTasks;
-    case "all":
-      return openRootTasks;
     default:
-      return openRootTasks;
+      return mainTasks;
   }
 }
 
@@ -949,11 +1038,24 @@ function createFollowUpIso(option) {
   return new Date(Date.now() + totalHours * 60 * 60 * 1000).toISOString();
 }
 
+function getEndOfLocalDay(date) {
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
 function getLocalDateKey(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function isOnOrBefore(value, deadline) {
+  if (!value) {
+    return false;
+  }
+  return new Date(value).getTime() <= deadline.getTime();
 }
 
 function formatRelativeMoment(value) {
