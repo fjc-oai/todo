@@ -33,6 +33,19 @@ Or use the helper script:
 ./dev.sh start
 ```
 
+Background mode:
+
+```bash
+./dev.sh install-cli
+todo start
+todo status
+todo logs
+todo stop
+todo restart
+```
+
+`todo start` builds the frontend and runs the backend in the background on `http://localhost:8000`.
+
 ## MVP
 
 - quick capture to backlog
