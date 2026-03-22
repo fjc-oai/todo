@@ -323,7 +323,7 @@ function App() {
       title,
       area: parentTask.area,
       status: "open",
-      taskType: "backlog",
+      taskType: parentTask.area === "work" ? "main" : "backlog",
       details: "",
       parentId: parentTaskId,
     });
@@ -587,6 +587,7 @@ function App() {
           <TaskCollection
             emptyState={getTypeEmptyState(typeTab)}
             getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
+            highlightTaskType={typeTab}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
             onSetTaskType={handleSetTaskType}
@@ -641,6 +642,7 @@ function TaskCollection({
   count,
   groups,
   getOpenChildCount,
+  highlightTaskType,
   todayKey,
   selectedTaskId,
   onSelect,
@@ -660,6 +662,7 @@ function TaskCollection({
             <TaskTree
               getOpenChildCount={getOpenChildCount}
               group={group}
+              highlightTaskType={highlightTaskType}
               key={group.root.id}
               onSelect={onSelect}
               onSetStatus={onSetStatus}
@@ -712,6 +715,7 @@ function AreaSectionPanel({
                   <TaskTree
                     getOpenChildCount={getOpenChildCount}
                     group={group}
+                    highlightTaskType={section.id}
                     key={group.root.id}
                     onSelect={onSelect}
                     onSetStatus={onSetStatus}
@@ -733,10 +737,20 @@ function AreaSectionPanel({
   );
 }
 
-function TaskTree({ group, getOpenChildCount, selectedTaskId, todayKey, onSelect, onToggleToday, onSetStatus }) {
+function TaskTree({
+  group,
+  getOpenChildCount,
+  highlightTaskType,
+  selectedTaskId,
+  todayKey,
+  onSelect,
+  onToggleToday,
+  onSetStatus,
+}) {
   return (
     <div className="task-tree">
       <TaskCard
+        isContextTask={Boolean(highlightTaskType) && group.root.taskType !== highlightTaskType}
         isSelected={selectedTaskId === group.root.id}
         openSubtaskCount={getOpenChildCount(group.root.id)}
         onSelect={() => onSelect(group.root.id)}
@@ -750,6 +764,7 @@ function TaskTree({ group, getOpenChildCount, selectedTaskId, todayKey, onSelect
         <div className="task-tree__children">
           {group.children.map((child) => (
             <TaskCard
+              isContextTask={Boolean(highlightTaskType) && child.taskType !== highlightTaskType}
               isSelected={selectedTaskId === child.id}
               isSubtask
               key={child.id}
@@ -769,6 +784,7 @@ function TaskTree({ group, getOpenChildCount, selectedTaskId, todayKey, onSelect
 
 function TaskCard({
   task,
+  isContextTask = false,
   isSelected,
   isSubtask = false,
   openSubtaskCount = 0,
@@ -783,7 +799,7 @@ function TaskCard({
 
   return (
     <article
-      className={`task-card ${isSelected ? "task-card--selected" : ""} ${isSubtask ? "task-card--subtask" : ""}`}
+      className={`task-card ${isSelected ? "task-card--selected" : ""} ${isSubtask ? "task-card--subtask" : ""} ${isContextTask ? "task-card--context" : ""}`}
       onClick={onSelect}
     >
       <div className="task-card__topline">
