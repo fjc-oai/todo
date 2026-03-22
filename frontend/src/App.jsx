@@ -42,7 +42,6 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [captureTitle, setCaptureTitle] = useState("");
   const [captureArea, setCaptureArea] = useState("work");
-  const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -61,11 +60,6 @@ function App() {
           target.tagName === "TEXTAREA" ||
           target.tagName === "SELECT" ||
           target.isContentEditable);
-
-      if (event.key === "/" && !isTyping) {
-        event.preventDefault();
-        document.getElementById("task-search")?.focus();
-      }
 
       if (event.key.toLowerCase() === "n" && !isTyping) {
         event.preventDefault();
@@ -158,6 +152,7 @@ function App() {
 
   const rootTasks = tasks.filter((task) => task.parentId === null);
   const openRootTasks = sortTasks(rootTasks.filter((task) => task.status === "open"));
+  const doneRootTasks = sortCompletedTasks(rootTasks.filter((task) => task.status === "done"));
   const backlogTasks = sortTasks(
     rootTasks.filter((task) => task.status === "open" && task.taskType === "backlog"),
   );
@@ -169,9 +164,6 @@ function App() {
   );
   const deadlineTasks = sortTasks(
     rootTasks.filter((task) => task.status === "open" && task.taskType === "deadline"),
-  );
-  const dueSoonTasks = sortTasks(
-    deadlineTasks.filter((task) => isOverdue(task.dueAt) || isWithinDays(task.dueAt, 7)),
   );
   const todayWorkTasks = sortTasks(
     rootTasks.filter(
@@ -199,19 +191,36 @@ function App() {
     ),
   );
   const deadlineTodayTasks = sortTasks(
-    deadlineTasks.filter((task) => task.dueAt && (isOverdue(task.dueAt) || isWithinDays(task.dueAt, 2))),
+    deadlineTasks.filter((task) => task.dueAt && isOnOrBefore(task.dueAt, getEndOfLocalDay(new Date()))),
   );
+  const todayWorkSections = [
+    { id: "main", title: "Main", tasks: todayWorkTasks.filter((task) => task.taskType === "main") },
+    { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "work") },
+    { id: "deadline", title: "Deadline", tasks: deadlineTodayTasks.filter((task) => task.area === "work") },
+    { id: "backlog", title: "Backlog", tasks: todayWorkTasks.filter((task) => task.taskType === "backlog") },
+  ];
+  const todayLifeSections = [
+    { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "life") },
+    { id: "deadline", title: "Deadline", tasks: deadlineTodayTasks.filter((task) => task.area === "life") },
+    { id: "backlog", title: "Backlog", tasks: todayLifeTasks.filter((task) => task.taskType === "backlog") },
+  ];
   const workTasks = sortTasks(
     rootTasks.filter((task) => task.area === "work" && task.status === "open"),
   );
   const lifeTasks = sortTasks(
     rootTasks.filter((task) => task.area === "life" && task.status === "open"),
   );
-
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const searchResults = normalizedQuery
-    ? sortTasks(rootTasks.filter((task) => matchesTask(task, normalizedQuery)))
-    : [];
+  const workSections = [
+    { id: "main", title: "Main", tasks: workTasks.filter((task) => task.taskType === "main") },
+    { id: "blocked", title: "Blocked", tasks: workTasks.filter((task) => task.taskType === "blocked") },
+    { id: "deadline", title: "Deadline", tasks: workTasks.filter((task) => task.taskType === "deadline") },
+    { id: "backlog", title: "Backlog", tasks: workTasks.filter((task) => task.taskType === "backlog") },
+  ];
+  const lifeSections = [
+    { id: "blocked", title: "Blocked", tasks: lifeTasks.filter((task) => task.taskType === "blocked") },
+    { id: "deadline", title: "Deadline", tasks: lifeTasks.filter((task) => task.taskType === "deadline") },
+    { id: "backlog", title: "Backlog", tasks: lifeTasks.filter((task) => task.taskType === "backlog") },
+  ];
   const todayCount =
     todayWorkTasks.length +
     todayLifeTasks.length +
@@ -239,7 +248,6 @@ function App() {
       setSelectedTaskId(task.id);
       setPrimaryTab("types");
       setTypeTab("backlog");
-      setSearchQuery("");
     }
   }
 
@@ -254,6 +262,10 @@ function App() {
   async function handleSetTaskType(taskId, taskType) {
     const task = tasks.find((item) => item.id === taskId);
     if (!task) {
+      return;
+    }
+
+    if (task.area === "life" && taskType === "main") {
       return;
     }
 
@@ -280,10 +292,21 @@ function App() {
   }
 
   const metrics = [
-    { label: "Today", value: todayCount, tone: "accent" },
-    { label: "Blocked", value: blockedTasks.length, tone: "neutral" },
-    { label: "Deadlines", value: dueSoonTasks.length, tone: dueSoonTasks.length > 0 ? "warning" : "neutral" },
-    { label: "Backlog", value: backlogTasks.length, tone: "neutral" },
+    {
+      label: "Selected",
+      value: todayWorkTasks.length + todayLifeTasks.length,
+      tone: "accent",
+    },
+    {
+      label: "Blocked Today",
+      value: blockedTodayTasks.length,
+      tone: "neutral",
+    },
+    {
+      label: "Due Today",
+      value: deadlineTodayTasks.length,
+      tone: deadlineTodayTasks.length > 0 ? "warning" : "neutral",
+    },
   ];
 
   return (
@@ -303,7 +326,6 @@ function App() {
               className={`nav-item ${primaryTab === tab.id ? "nav-item--active" : ""}`}
               onClick={() => {
                 setPrimaryTab(tab.id);
-                setSearchQuery("");
               }}
               type="button"
             >
@@ -311,7 +333,7 @@ function App() {
                 <span className="nav-item__label">{tab.label}</span>
               </span>
               <span className="nav-item__count">
-                {tab.id === "today" ? todayCount : openRootTasks.length}
+                {getPrimaryTabCount(tab.id, todayCount, openRootTasks.length, doneRootTasks.length)}
               </span>
             </button>
           ))}
@@ -328,7 +350,6 @@ function App() {
                   onClick={() => {
                     setPrimaryTab("areas");
                     setAreaTab(subtab.id);
-                    setSearchQuery("");
                   }}
                   type="button"
                 >
@@ -353,7 +374,6 @@ function App() {
                   onClick={() => {
                     setPrimaryTab("types");
                     setTypeTab(subtab.id);
-                    setSearchQuery("");
                   }}
                   type="button"
                 >
@@ -367,15 +387,25 @@ function App() {
               ))}
             </div>
           </div>
+
+          <button
+            className={`nav-item ${primaryTab === "done" ? "nav-item--active" : ""}`}
+            onClick={() => {
+              setPrimaryTab("done");
+            }}
+            type="button"
+          >
+            <span className="nav-item__copy">
+              <span className="nav-item__label">Done</span>
+            </span>
+            <span className="nav-item__count">{doneRootTasks.length}</span>
+          </button>
         </nav>
       </aside>
 
       <main className="workspace">
         <header className="workspace-header">
-          <div className="workspace-header__copy">
-            <p className="eyebrow">Overview</p>
-            <h2>Simple enough that the system helps instead of adding work.</h2>
-          </div>
+          <h3 className="workspace-header__title">Overview</h3>
           <div className="metric-strip" aria-label="Summary">
             {metrics.map((metric) => (
               <div key={metric.label} className={`metric-chip metric-chip--${metric.tone}`}>
@@ -390,12 +420,7 @@ function App() {
         {loading ? <div className="status-banner">Loading tasks...</div> : null}
 
         <section className="capture-panel">
-          <div className="capture-panel__copy">
-            <p className="eyebrow">Quick capture</p>
-            <p className="capture-panel__hint">New tasks land in backlog so you can decide later.</p>
-          </div>
-
-          <form className="capture-form" onSubmit={handleCreateTask}>
+          <form className="capture-form capture-form--compact" onSubmit={handleCreateTask}>
             <input
               id="quick-capture"
               autoComplete="off"
@@ -405,118 +430,83 @@ function App() {
               value={captureTitle}
             />
 
-            <div className="capture-form__controls">
-              <label className="field-inline">
-                <span>Area</span>
-                <select value={captureArea} onChange={(event) => setCaptureArea(event.target.value)}>
-                  <option value="work">Work</option>
-                  <option value="life">Life</option>
-                </select>
-              </label>
+            <select value={captureArea} onChange={(event) => setCaptureArea(event.target.value)}>
+              <option value="work">Work</option>
+              <option value="life">Life</option>
+            </select>
 
-              <button className="primary-button" disabled={isSaving} type="submit">
-                Create
-              </button>
-            </div>
+            <button className="primary-button" disabled={isSaving} type="submit">
+              Create
+            </button>
           </form>
         </section>
 
-        <section className="search-row">
-          <label className="search-input" htmlFor="task-search">
-            <span>Search</span>
-            <input
-              id="task-search"
-              autoComplete="off"
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search titles and details"
-              value={searchQuery}
-            />
-          </label>
-        </section>
-
-        {normalizedQuery ? (
-          <TaskCollection
-            description={`Results for "${searchQuery.trim()}"`}
-            emptyState="No task matches that search."
-            onSelect={setSelectedTaskId}
-            onSetStatus={handleSetTaskStatus}
-            onSetTaskType={handleSetTaskType}
-            onToggleToday={handleToggleToday}
-            selectedTaskId={selectedTaskId}
-            tasks={searchResults}
-            title="Search"
-            todayKey={todayKey}
-          />
-        ) : primaryTab === "today" ? (
-          <div className="dashboard-grid">
-            <TaskCollection
-              description="Work tasks you deliberately chose to move today."
-              emptyState="Nothing selected for today yet."
+        {primaryTab === "today" ? (
+          <div className="today-stack">
+            <AreaSectionPanel
+              emptyState="No work tasks need attention today."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={todayWorkTasks}
+              sections={todayWorkSections}
               title="Work"
               todayKey={todayKey}
             />
 
-            <TaskCollection
-              description="Life tasks you deliberately chose to move today."
-              emptyState="No life tasks selected for today."
+            <AreaSectionPanel
+              emptyState="No life tasks need attention today."
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
               selectedTaskId={selectedTaskId}
-              tasks={todayLifeTasks}
+              sections={todayLifeSections}
               title="Life"
-              todayKey={todayKey}
-            />
-
-            <TaskCollection
-              description="Blocked tasks whose check back is due by the end of today."
-              emptyState="No blocked tasks to revisit today."
-              onSelect={setSelectedTaskId}
-              onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
-              onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
-              tasks={blockedTodayTasks}
-              title="Blocked"
-              todayKey={todayKey}
-            />
-
-            <TaskCollection
-              description="Deadlines that are overdue or due within the next two days."
-              emptyState="No deadlines demanding attention today."
-              onSelect={setSelectedTaskId}
-              onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
-              onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
-              tasks={deadlineTodayTasks}
-              title="Deadlines"
               todayKey={todayKey}
             />
           </div>
         ) : primaryTab === "all" ? (
+          <div className="today-stack">
+            <AreaSectionPanel
+              emptyState="No open work tasks."
+              onSelect={setSelectedTaskId}
+              onSetStatus={handleSetTaskStatus}
+              onSetTaskType={handleSetTaskType}
+              onToggleToday={handleToggleToday}
+              selectedTaskId={selectedTaskId}
+              sections={workSections}
+              title="Work"
+              todayKey={todayKey}
+            />
+
+            <AreaSectionPanel
+              emptyState="No open life tasks."
+              onSelect={setSelectedTaskId}
+              onSetStatus={handleSetTaskStatus}
+              onSetTaskType={handleSetTaskType}
+              onToggleToday={handleToggleToday}
+              selectedTaskId={selectedTaskId}
+              sections={lifeSections}
+              title="Life"
+              todayKey={todayKey}
+            />
+          </div>
+        ) : primaryTab === "done" ? (
           <TaskCollection
-            description="Every open top-level task. Use Today on a card to plan the day."
-            emptyState="No open tasks."
+            emptyState="No finished tasks yet."
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
             onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
             selectedTaskId={selectedTaskId}
-            tasks={openRootTasks}
-            title="All Tasks"
+            tasks={doneRootTasks}
+            title="Done"
             todayKey={todayKey}
           />
         ) : primaryTab === "areas" ? (
           <TaskCollection
-            description={getAreaDescription(areaTab)}
             emptyState={getAreaEmptyState(areaTab)}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
@@ -529,7 +519,6 @@ function App() {
           />
         ) : (
           <TaskCollection
-            description={getTypeDescription(typeTab)}
             emptyState={getTypeEmptyState(typeTab)}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
@@ -569,38 +558,32 @@ function App() {
 
 function TaskCollection({
   title,
-  description,
   emptyState,
   tasks,
   todayKey,
   selectedTaskId,
   onSelect,
   onToggleToday,
-  onSetTaskType,
   onSetStatus,
 }) {
   return (
     <section className="panel">
       <header className="panel__header">
-        <div>
-          <p className="eyebrow">{title}</p>
-          <h3>{description}</h3>
-        </div>
+        <h3>{title}</h3>
         <span className="panel__count">{tasks.length}</span>
       </header>
 
       {tasks.length > 0 ? (
         <div className="panel__body">
           {tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              isSelected={selectedTaskId === task.id}
-              onSelect={() => onSelect(task.id)}
-              onSetStatus={(status) => onSetStatus(task.id, status)}
-              onSetTaskType={(taskType) => onSetTaskType(task.id, taskType)}
-              onToggleToday={() => onToggleToday(task.id)}
-              task={task}
-              todayKey={todayKey}
+                <TaskCard
+                  key={task.id}
+                  isSelected={selectedTaskId === task.id}
+                  onSelect={() => onSelect(task.id)}
+                  onSetStatus={(status) => onSetStatus(task.id, status)}
+                  onToggleToday={() => onToggleToday(task.id)}
+                  task={task}
+                  todayKey={todayKey}
             />
           ))}
         </div>
@@ -613,30 +596,90 @@ function TaskCollection({
   );
 }
 
-function TaskCard({ task, isSelected, todayKey, onSelect, onToggleToday, onSetTaskType, onSetStatus }) {
+function AreaSectionPanel({
+  title,
+  sections,
+  emptyState,
+  todayKey,
+  selectedTaskId,
+  onSelect,
+  onToggleToday,
+  onSetStatus,
+}) {
+  const visibleSections = sections.filter((section) => section.tasks.length > 0);
+  const taskCount = sections.reduce((count, section) => count + section.tasks.length, 0);
+
+  return (
+    <section className="panel">
+      <header className="panel__header">
+        <h3>{title}</h3>
+        <span className="panel__count">{taskCount}</span>
+      </header>
+
+      {visibleSections.length > 0 ? (
+        <div className="today-area-panel__sections">
+          {visibleSections.map((section) => (
+            <section className="today-area-panel__section" key={section.id}>
+              <div className="today-area-panel__section-header">
+                <h4>{section.title}</h4>
+                <span className="today-area-panel__section-count">{section.tasks.length}</span>
+              </div>
+              <div className="panel__body">
+                {section.tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    isSelected={selectedTaskId === task.id}
+                    onSelect={() => onSelect(task.id)}
+                    onSetStatus={(status) => onSetStatus(task.id, status)}
+                    onToggleToday={() => onToggleToday(task.id)}
+                    task={task}
+                    todayKey={todayKey}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-panel">
+          <p>{emptyState}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TaskCard({ task, isSelected, todayKey, onSelect, onToggleToday, onSetStatus }) {
   const statusTone = getTimingTone(task);
+  const isPlannedToday = task.plannedFor === todayKey;
 
   return (
     <article className={`task-card ${isSelected ? "task-card--selected" : ""}`} onClick={onSelect}>
       <div className="task-card__topline">
-        <div className="task-card__badges">
-          <span className={`badge badge--${task.area}`}>{task.area}</span>
-          <span className="badge badge--soft">{formatTaskType(task.taskType)}</span>
-          {task.plannedFor === todayKey ? <span className="badge">today</span> : null}
+        <h4>{task.title}</h4>
+        <div className="task-card__topline-actions">
+          <button
+            className={`ghost-button ${isPlannedToday ? "ghost-button--active" : ""}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleToday();
+            }}
+            type="button"
+          >
+            {isPlannedToday ? "Untoday" : "Today"}
+          </button>
+          <button
+            className="ghost-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onSetStatus(task.status === "done" ? "open" : "done");
+            }}
+            type="button"
+          >
+            {task.status === "done" ? "Reopen" : "Done"}
+          </button>
         </div>
-        <button
-          className="ghost-button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelect();
-          }}
-          type="button"
-        >
-          Open
-        </button>
       </div>
-
-      <h4>{task.title}</h4>
       <p className="task-card__preview">{task.details ? task.details : "No details yet."}</p>
 
       <div className="task-card__meta">
@@ -648,69 +691,6 @@ function TaskCard({ task, isSelected, todayKey, onSelect, onToggleToday, onSetTa
         {task.followUpAt ? (
           <span className="task-card__meta-pill">Check {formatRelativeMoment(task.followUpAt)}</span>
         ) : null}
-      </div>
-
-      <div className="task-card__actions">
-        <button
-          className={`mini-button ${task.plannedFor === todayKey ? "mini-button--active" : ""}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleToday();
-          }}
-          type="button"
-        >
-          {task.plannedFor === todayKey ? "Unplan" : "Today"}
-        </button>
-        <button
-          className={`mini-button ${task.taskType === "main" ? "mini-button--active" : ""}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetTaskType("main");
-          }}
-          type="button"
-        >
-          Main
-        </button>
-        <button
-          className={`mini-button ${task.taskType === "blocked" ? "mini-button--active" : ""}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetTaskType("blocked");
-          }}
-          type="button"
-        >
-          Blocked
-        </button>
-        <button
-          className={`mini-button ${task.taskType === "deadline" ? "mini-button--active" : ""}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetTaskType("deadline");
-          }}
-          type="button"
-        >
-          Deadline
-        </button>
-        <button
-          className={`mini-button ${task.taskType === "backlog" ? "mini-button--active" : ""}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetTaskType("backlog");
-          }}
-          type="button"
-        >
-          Backlog
-        </button>
-        <button
-          className="mini-button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetStatus(task.status === "done" ? "open" : "done");
-          }}
-          type="button"
-        >
-          {task.status === "done" ? "Reopen" : "Done"}
-        </button>
       </div>
     </article>
   );
@@ -726,6 +706,8 @@ function TaskInspector({ task, todayKey, onClose, onUpdateTask, onToggleToday, o
   async function saveField(fieldName, value) {
     await onUpdateTask(task.id, { [fieldName]: value });
   }
+
+  const availableTaskTypes = getAvailableTaskTypes(task.area);
 
   return (
     <div className="inspector">
@@ -786,8 +768,12 @@ function TaskInspector({ task, todayKey, onClose, onUpdateTask, onToggleToday, o
 
       <div className="field-group">
         <span className="field-group__label">Type</span>
-        <div className="segmented-control segmented-control--four-up">
-          {["main", "blocked", "deadline", "backlog"].map((taskType) => (
+        <div
+          className={`segmented-control ${
+            availableTaskTypes.length === 4 ? "segmented-control--four-up" : "segmented-control--three-up"
+          }`}
+        >
+          {availableTaskTypes.map((taskType) => (
             <button
               key={taskType}
               className={`segmented-control__button ${task.taskType === taskType ? "segmented-control__button--active" : ""}`}
@@ -928,14 +914,23 @@ function getTypeCount(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTa
   }
 }
 
-function getAreaDescription(areaTab) {
-  switch (areaTab) {
-    case "work":
-      return "Open work tasks across main, blocked, backlog, and deadlines.";
-    case "life":
-      return "Open life tasks that should not disappear.";
+function getAvailableTaskTypes(area) {
+  if (area === "life") {
+    return ["blocked", "deadline", "backlog"];
+  }
+  return ["main", "blocked", "deadline", "backlog"];
+}
+
+function getPrimaryTabCount(tabId, todayCount, openCount, doneCount) {
+  switch (tabId) {
+    case "today":
+      return todayCount;
+    case "all":
+      return openCount;
+    case "done":
+      return doneCount;
     default:
-      return "";
+      return 0;
   }
 }
 
@@ -947,21 +942,6 @@ function getAreaEmptyState(areaTab) {
       return "No open life tasks.";
     default:
       return "Nothing here.";
-  }
-}
-
-function getTypeDescription(typeTab) {
-  switch (typeTab) {
-    case "main":
-      return "Tasks you want to actively move forward.";
-    case "blocked":
-      return "Tasks blocked on time, CI, or someone else.";
-    case "deadline":
-      return "Tasks with a real due date.";
-    case "backlog":
-      return "Tasks worth keeping without making them active.";
-    default:
-      return "";
   }
 }
 
@@ -1122,11 +1102,15 @@ function sortTasks(tasks) {
   });
 }
 
-function matchesTask(task, query) {
-  const haystack = [task.title, task.details, task.area, task.status, task.taskType]
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(query);
+function sortCompletedTasks(tasks) {
+  return [...tasks].sort((left, right) => {
+    const leftCompleted = left.completedAt ? new Date(left.completedAt).getTime() : 0;
+    const rightCompleted = right.completedAt ? new Date(right.completedAt).getTime() : 0;
+    if (leftCompleted !== rightCompleted) {
+      return rightCompleted - leftCompleted;
+    }
+    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+  });
 }
 
 async function getApiError(response, fallbackMessage) {

@@ -147,6 +147,12 @@ def row_to_task(row) -> dict:
     }
 
 
+def normalize_area_task_type(area: str, task_type: str) -> str:
+    if area == "life" and task_type == "main":
+        return "backlog"
+    return task_type
+
+
 def get_task_or_404(conn, task_id: int):
     row = conn.execute(sa.select(tasks).where(tasks.c.id == task_id)).first()
     if row is None:
@@ -267,6 +273,8 @@ def normalize_task_rows():
 
             if row["task_type"] == "focus":
                 normalized_type = "main"
+
+            normalized_type = normalize_area_task_type(row.get("area") or "work", normalized_type)
 
             if normalized_status != row["status"]:
                 updates["status"] = normalized_status
@@ -407,6 +415,7 @@ def create_task(task: TaskCreate):
         values["due_at"] = None
     if values["task_type"] != "blocked":
         values["follow_up_at"] = None
+    values["task_type"] = normalize_area_task_type(values["area"], values["task_type"])
 
     values["created_at"] = now
     values["updated_at"] = now
@@ -443,11 +452,17 @@ def update_task(task_id: int, update: TaskUpdate):
 
     with engine.begin() as conn:
         current = get_task_or_404(conn, task_id)
+        current_area = current.area
+        current_task_type = current.task_type
 
         if "parent_id" in values and values["parent_id"] is not None:
             if values["parent_id"] == task_id:
                 raise HTTPException(status_code=400, detail="Task cannot parent itself")
             get_task_or_404(conn, values["parent_id"])
+
+        effective_area = values.get("area", current_area)
+        effective_task_type = values.get("task_type", current_task_type)
+        values["task_type"] = normalize_area_task_type(effective_area, effective_task_type)
 
         if "task_type" in values and values["task_type"] != "deadline":
             values.setdefault("due_at", None)
