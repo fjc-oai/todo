@@ -56,6 +56,7 @@ tasks = sa.Table(
     sa.Column("due_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("follow_up_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("planned_for", sa.Date, nullable=True),
+    sa.Column("today_position", sa.Integer, nullable=True),
     sa.Column(
         "project_id",
         sa.Integer,
@@ -98,6 +99,7 @@ class TaskCreate(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
+    today_position: Optional[int] = None
     project_id: Optional[int] = None
     completed_at: Optional[datetime] = None
 
@@ -111,6 +113,7 @@ class TaskUpdate(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
+    today_position: Optional[int] = None
     project_id: Optional[int] = None
     completed_at: Optional[datetime] = None
 
@@ -125,6 +128,7 @@ class TaskOut(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
+    today_position: Optional[int] = None
     project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
@@ -182,6 +186,7 @@ def row_to_task(row) -> dict:
         "due_at": row.due_at,
         "follow_up_at": row.follow_up_at,
         "planned_for": row.planned_for,
+        "today_position": row.today_position,
         "project_id": row.project_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -193,6 +198,20 @@ def normalize_area_task_type(area: str, task_type: str) -> str:
     if area == "life" and task_type == "main":
         return "backlog"
     return task_type
+
+
+def get_next_today_position(conn, area: str, task_type: str, exclude_task_id: Optional[int] = None) -> int:
+    query = sa.select(sa.func.max(tasks.c.today_position)).where(
+        tasks.c.area == area,
+        tasks.c.task_type == task_type,
+        tasks.c.status == "open",
+    )
+
+    if exclude_task_id is not None:
+        query = query.where(tasks.c.id != exclude_task_id)
+
+    current_max = conn.execute(query).scalar_one()
+    return (current_max or 0) + 1
 
 
 def get_task_or_404(conn, task_id: int):
@@ -237,6 +256,7 @@ def ensure_schema():
         "due_at",
         "follow_up_at",
         "planned_for",
+        "today_position",
         "project_id",
         "created_at",
         "updated_at",
@@ -287,6 +307,7 @@ def ensure_schema():
       due_at DATETIME,
       follow_up_at DATETIME,
       planned_for DATE,
+      today_position INTEGER,
       project_id INTEGER REFERENCES projects_v2(id) ON DELETE SET NULL,
       created_at DATETIME NOT NULL,
       updated_at DATETIME NOT NULL,
@@ -303,10 +324,10 @@ def ensure_schema():
         """
         INSERT INTO tasks_v2 (
           id, title, details, area, status, task_type, due_at, follow_up_at,
-          planned_for, project_id, created_at, updated_at, completed_at
+          planned_for, today_position, project_id, created_at, updated_at, completed_at
         ) VALUES (
           :id, :title, :details, :area, :status, :task_type, :due_at, :follow_up_at,
-          :planned_for, :project_id, :created_at, :updated_at, :completed_at
+          :planned_for, :today_position, :project_id, :created_at, :updated_at, :completed_at
         )
         """
     )
@@ -379,6 +400,7 @@ def ensure_schema():
                 "due_at": row.get("due_at") if task_type == "deadline" else None,
                 "follow_up_at": row.get("follow_up_at") if task_type == "blocked" else None,
                 "planned_for": row.get("planned_for"),
+                "today_position": row.get("today_position"),
                 "project_id": project_id,
                 "created_at": row.get("created_at") or utcnow(),
                 "updated_at": row.get("updated_at") or row.get("created_at") or utcnow(),
@@ -424,6 +446,8 @@ def normalize_rows():
                 updates["due_at"] = None
             if normalized_type != "blocked" and row.follow_up_at is not None:
                 updates["follow_up_at"] = None
+            if row.status == "done" and row.today_position is not None:
+                updates["today_position"] = None
 
             if row.project_id is not None:
                 project = conn.execute(
@@ -468,6 +492,7 @@ def seed_initial_data():
                 "status": "open",
                 "task_type": "main",
                 "planned_for": today,
+                "today_position": 1,
                 "project_id": roadmap_project_id,
             },
             {
@@ -493,6 +518,7 @@ def seed_initial_data():
                 "status": "open",
                 "task_type": "main",
                 "planned_for": today,
+                "today_position": 2,
             },
             {
                 "title": "Check CI on PR #184",
@@ -532,6 +558,7 @@ def seed_initial_data():
                     due_at=None,
                     follow_up_at=None,
                     planned_for=None,
+                    today_position=None,
                     project_id=None,
                     created_at=now,
                     updated_at=now,
@@ -661,6 +688,10 @@ def create_task(task: TaskCreate):
             values["area"] = project.area
 
         values["task_type"] = normalize_area_task_type(values["area"], values["task_type"])
+        if values.get("planned_for") is None and values.get("today_position") is None:
+            values["today_position"] = None
+        elif values.get("today_position") is None:
+            values["today_position"] = get_next_today_position(conn, values["area"], values["task_type"])
         values["created_at"] = now
         values["updated_at"] = now
 
@@ -686,6 +717,7 @@ def update_task(task_id: int, update: TaskUpdate):
         if values["status"] == "done" and "completed_at" not in values:
             values["completed_at"] = utcnow()
             values["planned_for"] = None
+            values["today_position"] = None
         elif values["status"] == "open" and "completed_at" not in values:
             values["completed_at"] = None
 
@@ -698,11 +730,23 @@ def update_task(task_id: int, update: TaskUpdate):
         effective_area = values.get("area", current.area)
         effective_task_type = values.get("task_type", current.task_type)
         values["task_type"] = normalize_area_task_type(effective_area, effective_task_type)
+        category_changed = effective_area != current.area or values["task_type"] != current.task_type
 
         if "task_type" in values and values["task_type"] != "deadline":
             values.setdefault("due_at", None)
         if "task_type" in values and values["task_type"] != "blocked":
             values.setdefault("follow_up_at", None)
+        if values.get("planned_for", current.planned_for) is None:
+            values.setdefault("today_position", None)
+        elif "today_position" not in values and (
+            current.today_position is None or category_changed
+        ):
+            values["today_position"] = get_next_today_position(
+                conn,
+                effective_area,
+                values["task_type"],
+                exclude_task_id=task_id,
+            )
 
         conn.execute(sa.update(tasks).where(tasks.c.id == task_id).values(**values))
         updated = get_task_or_404(conn, task_id)

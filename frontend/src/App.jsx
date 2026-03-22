@@ -239,7 +239,7 @@ function App() {
     ),
     projectById,
   );
-  const todayLifeTasks = sortTasks(
+  const todayLifeTasks = sortTodayTasks(
     openTasks.filter(
       (task) =>
         task.plannedFor === todayKey &&
@@ -249,22 +249,32 @@ function App() {
     ),
     projectById,
   );
-  const blockedTodayTasks = sortTasks(
+  const blockedTodayTasks = sortTodayTasks(
     blockedTasks.filter(
       (task) => !task.followUpAt || isOnOrBefore(task.followUpAt, getEndOfLocalDay(new Date())),
     ),
     projectById,
   );
-  const deadlineTodayTasks = sortTasks(
+  const deadlineTodayTasks = sortTodayTasks(
     deadlineTasks.filter((task) => task.dueAt && isOnOrBefore(task.dueAt, getEndOfLocalDay(new Date()))),
+    projectById,
+  );
+  const todayWorkPlannedTasks = sortTodayTasks(
+    openTasks.filter(
+      (task) =>
+        task.plannedFor === todayKey &&
+        task.area === "work" &&
+        task.taskType !== "blocked" &&
+        task.taskType !== "deadline",
+    ),
     projectById,
   );
 
   const todayWorkSections = [
-    { id: "main", title: "Main", tasks: todayWorkTasks.filter((task) => task.taskType === "main") },
+    { id: "main", title: "Main", tasks: todayWorkPlannedTasks.filter((task) => task.taskType === "main") },
     { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "work") },
     { id: "deadline", title: "Deadline", tasks: deadlineTodayTasks.filter((task) => task.area === "work") },
-    { id: "backlog", title: "Backlog", tasks: todayWorkTasks.filter((task) => task.taskType === "backlog") },
+    { id: "backlog", title: "Backlog", tasks: todayWorkPlannedTasks.filter((task) => task.taskType === "backlog") },
   ];
   const todayLifeSections = [
     { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "life") },
@@ -287,6 +297,9 @@ function App() {
     todayLifeTasks.length +
     blockedTodayTasks.length +
     deadlineTodayTasks.length;
+  const closedTodayTasks = doneTasks.filter(
+    (task) => task.completedAt && getLocalDateKey(new Date(task.completedAt)) === todayKey,
+  );
 
   async function handleCreateTask(event) {
     event.preventDefault();
@@ -352,6 +365,66 @@ function App() {
       plannedFor: task.plannedFor === todayKey ? null : todayKey,
       status: task.status === "done" ? "open" : task.status,
     });
+  }
+
+  async function handleReorderTodaySection(sectionTasks, draggedTaskId, targetTaskId) {
+    if (draggedTaskId === targetTaskId) {
+      return;
+    }
+
+    const draggedIndex = sectionTasks.findIndex((task) => task.id === draggedTaskId);
+    const targetIndex = sectionTasks.findIndex((task) => task.id === targetTaskId);
+
+    if (draggedIndex === -1 || targetIndex === -1) {
+      return;
+    }
+
+    const reorderedTasks = [...sectionTasks];
+    const [draggedTask] = reorderedTasks.splice(draggedIndex, 1);
+    reorderedTasks.splice(targetIndex, 0, draggedTask);
+
+    const nextPositions = new Map(
+      reorderedTasks.map((task, index) => [task.id, index + 1]),
+    );
+
+    setTasks((currentTasks) =>
+      currentTasks.map((task) =>
+        nextPositions.has(task.id)
+          ? { ...task, todayPosition: nextPositions.get(task.id) }
+          : task,
+      ),
+    );
+
+    setIsSaving(true);
+    setError("");
+
+    try {
+      const responses = await Promise.all(
+        reorderedTasks.map((task, index) =>
+          fetch(`${API}/tasks/${task.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ today_position: index + 1 }),
+          }),
+        ),
+      );
+
+      const failedResponse = responses.find((response) => !response.ok);
+      if (failedResponse) {
+        throw new Error(await getApiError(failedResponse, "Failed to reorder tasks."));
+      }
+
+      const updatedTasks = (await Promise.all(responses.map((response) => response.json()))).map(fromApiTask);
+      const updatedTaskMap = new Map(updatedTasks.map((task) => [task.id, task]));
+      setTasks((currentTasks) =>
+        currentTasks.map((task) => updatedTaskMap.get(task.id) ?? task),
+      );
+    } catch (fetchError) {
+      setError(fetchError.message || "Failed to reorder tasks.");
+      await loadData();
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   const metrics = [
@@ -552,6 +625,7 @@ function App() {
           <div className="today-stack">
             <AreaSectionPanel
               emptyState="No work tasks need attention today."
+              onReorderSection={handleReorderTodaySection}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onToggleToday={handleToggleToday}
@@ -564,6 +638,7 @@ function App() {
 
             <AreaSectionPanel
               emptyState="No life tasks need attention today."
+              onReorderSection={handleReorderTodaySection}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
               onToggleToday={handleToggleToday}
@@ -571,6 +646,18 @@ function App() {
               sections={todayLifeSections}
               selectedTaskId={selectedTaskId}
               title="Life"
+              todayKey={todayKey}
+            />
+
+            <TaskCollection
+              emptyState="Nothing closed today yet."
+              onSelect={setSelectedTaskId}
+              onSetStatus={handleSetTaskStatus}
+              onToggleToday={handleToggleToday}
+              projectById={projectById}
+              selectedTaskId={selectedTaskId}
+              tasks={closedTodayTasks}
+              title="Closed today"
               todayKey={todayKey}
             />
           </div>
@@ -725,6 +812,7 @@ function AreaSectionPanel({
   onSelect,
   onToggleToday,
   onSetStatus,
+  onReorderSection,
 }) {
   const visibleSections = sections.filter((section) => section.tasks.length > 0);
   const taskCount = sections.reduce((count, section) => count + section.tasks.length, 0);
@@ -749,6 +837,12 @@ function AreaSectionPanel({
                   <TaskCard
                     isSelected={selectedTaskId === task.id}
                     key={task.id}
+                    onReorderDrop={
+                      onReorderSection && section.tasks.length > 1
+                        ? (draggedTaskId, targetTaskId) =>
+                            onReorderSection(section.tasks, draggedTaskId, targetTaskId)
+                        : null
+                    }
                     onSelect={() => onSelect(task.id)}
                     onSetStatus={(status) => onSetStatus(task.id, status)}
                     onToggleToday={() => onToggleToday(task.id)}
@@ -770,12 +864,61 @@ function AreaSectionPanel({
   );
 }
 
-function TaskCard({ task, project, isSelected, todayKey, onSelect, onToggleToday, onSetStatus }) {
+function TaskCard({
+  task,
+  project,
+  isSelected,
+  todayKey,
+  onSelect,
+  onToggleToday,
+  onSetStatus,
+  onReorderDrop,
+}) {
   const statusTone = getTimingTone(task);
   const isPlannedToday = task.plannedFor === todayKey;
+  const isReorderable = Boolean(onReorderDrop);
+  const [isDropTarget, setIsDropTarget] = useState(false);
 
   return (
-    <article className={`task-card ${isSelected ? "task-card--selected" : ""}`} onClick={onSelect}>
+    <article
+      className={`task-card ${isSelected ? "task-card--selected" : ""} ${
+        isReorderable ? "task-card--reorderable" : ""
+      } ${isDropTarget ? "task-card--drop-target" : ""}`}
+      draggable={isReorderable}
+      onClick={onSelect}
+      onDragEnd={() => setIsDropTarget(false)}
+      onDragLeave={() => setIsDropTarget(false)}
+      onDragOver={(event) => {
+        if (!isReorderable) {
+          return;
+        }
+
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setIsDropTarget(true);
+      }}
+      onDragStart={(event) => {
+        if (!isReorderable) {
+          return;
+        }
+
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(task.id));
+      }}
+      onDrop={(event) => {
+        if (!isReorderable) {
+          return;
+        }
+
+        event.preventDefault();
+        setIsDropTarget(false);
+        const draggedTaskId = Number(event.dataTransfer.getData("text/plain"));
+        if (Number.isNaN(draggedTaskId)) {
+          return;
+        }
+        onReorderDrop(draggedTaskId, task.id);
+      }}
+    >
       <div className="task-card__topline">
         <h4>{formatTaskTitle(task, project)}</h4>
         <div className="task-card__topline-actions">
@@ -1144,6 +1287,7 @@ function fromApiTask(task) {
     dueAt: task.due_at,
     followUpAt: task.follow_up_at,
     plannedFor: task.planned_for,
+    todayPosition: task.today_position,
     projectId: task.project_id,
     createdAt: task.created_at,
     updatedAt: task.updated_at,
@@ -1161,6 +1305,7 @@ function toApiTaskPayload(task) {
   if ("dueAt" in task) payload.due_at = task.dueAt;
   if ("followUpAt" in task) payload.follow_up_at = task.followUpAt;
   if ("plannedFor" in task) payload.planned_for = task.plannedFor;
+  if ("todayPosition" in task) payload.today_position = task.todayPosition;
   if ("projectId" in task) payload.project_id = task.projectId;
   if ("completedAt" in task) payload.completed_at = task.completedAt;
   return payload;
@@ -1315,8 +1460,30 @@ function sortTasks(list, projectById = new Map()) {
   return [...list].sort((left, right) => compareTasksByProject(left, right, projectById, "updatedAt"));
 }
 
-function sortCompletedTasks(list, projectById = new Map()) {
-  return [...list].sort((left, right) => compareTasksByProject(left, right, projectById, "completedAt"));
+function sortCompletedTasks(list) {
+  return [...list].sort((left, right) => {
+    const leftTime = left.completedAt ? new Date(left.completedAt).getTime() : 0;
+    const rightTime = right.completedAt ? new Date(right.completedAt).getTime() : 0;
+
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime;
+    }
+
+    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+  });
+}
+
+function sortTodayTasks(list, projectById = new Map()) {
+  return [...list].sort((left, right) => {
+    const leftPosition = left.todayPosition ?? Number.MAX_SAFE_INTEGER;
+    const rightPosition = right.todayPosition ?? Number.MAX_SAFE_INTEGER;
+
+    if (leftPosition !== rightPosition) {
+      return leftPosition - rightPosition;
+    }
+
+    return compareTasksByProject(left, right, projectById, "updatedAt");
+  });
 }
 
 function sortProjects(list) {
