@@ -31,7 +31,7 @@ engine = sa.create_engine(
 )
 
 VALID_STATUSES = {"open", "done"}
-VALID_TYPES = {"focus", "backlog", "blocked", "deadline"}
+VALID_TYPES = {"main", "backlog", "blocked", "deadline"}
 
 metadata = sa.MetaData()
 tasks = sa.Table(
@@ -63,7 +63,7 @@ class TaskCreate(BaseModel):
     details: str = ""
     area: Literal["work", "life"]
     status: Literal["open", "done"] = "open"
-    task_type: Literal["focus", "backlog", "blocked", "deadline"] = "backlog"
+    task_type: Literal["main", "backlog", "blocked", "deadline"] = "backlog"
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
@@ -76,7 +76,7 @@ class TaskUpdate(BaseModel):
     details: Optional[str] = None
     area: Optional[Literal["work", "life"]] = None
     status: Optional[Literal["open", "done"]] = None
-    task_type: Optional[Literal["focus", "backlog", "blocked", "deadline"]] = None
+    task_type: Optional[Literal["main", "backlog", "blocked", "deadline"]] = None
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
@@ -90,7 +90,7 @@ class TaskOut(BaseModel):
     details: str
     area: Literal["work", "life"]
     status: Literal["open", "done"]
-    task_type: Literal["focus", "backlog", "blocked", "deadline"]
+    task_type: Literal["main", "backlog", "blocked", "deadline"]
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
@@ -114,6 +114,8 @@ def map_old_type(row) -> str:
     current = row.get("task_type")
     if current in VALID_TYPES:
         return current
+    if current == "focus":
+        return "main"
 
     old_engagement = row.get("engagement")
     if old_engagement == "waiting":
@@ -124,7 +126,7 @@ def map_old_type(row) -> str:
         return "deadline"
     if row.get("status") == "inbox":
         return "backlog"
-    return "focus"
+    return "main"
 
 
 def row_to_task(row) -> dict:
@@ -134,7 +136,7 @@ def row_to_task(row) -> dict:
         "details": row.details or "",
         "area": row.area,
         "status": row.status,
-        "task_type": row.task_type,
+        "task_type": "main" if row.task_type == "focus" else row.task_type,
         "due_at": row.due_at,
         "follow_up_at": row.follow_up_at,
         "planned_for": row.planned_for,
@@ -241,6 +243,47 @@ def ensure_tasks_schema():
         conn.execute(sa.text("ALTER TABLE tasks_v2 RENAME TO tasks"))
 
 
+def normalize_task_rows():
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sa.select(
+                tasks.c.id,
+                tasks.c.status,
+                tasks.c.task_type,
+                tasks.c.due_at,
+                tasks.c.follow_up_at,
+                tasks.c.planned_for,
+            )
+        ).mappings().all()
+
+        for row in rows:
+            updates = {}
+            normalized_status = (
+                row["status"] if row["status"] in VALID_STATUSES else map_old_status(row["status"])
+            )
+            normalized_type = (
+                row["task_type"] if row["task_type"] in VALID_TYPES else map_old_type(row)
+            )
+
+            if row["task_type"] == "focus":
+                normalized_type = "main"
+
+            if normalized_status != row["status"]:
+                updates["status"] = normalized_status
+
+            if normalized_type != row["task_type"]:
+                updates["task_type"] = normalized_type
+
+            if normalized_type != "deadline" and row["due_at"] is not None:
+                updates["due_at"] = None
+
+            if normalized_type != "blocked" and row["follow_up_at"] is not None:
+                updates["follow_up_at"] = None
+
+            if updates:
+                conn.execute(sa.update(tasks).where(tasks.c.id == row["id"]).values(**updates))
+
+
 def seed_initial_tasks():
     with engine.begin() as conn:
         existing = conn.execute(
@@ -257,7 +300,7 @@ def seed_initial_tasks():
                 details="Turn a loose set of work ideas into a one-page roadmap before the team sync tomorrow.",
                 area="work",
                 status="open",
-                task_type="focus",
+                task_type="main",
                 planned_for=today,
                 created_at=now,
                 updated_at=now,
@@ -272,7 +315,7 @@ def seed_initial_tasks():
                 "details": "Pull the recurring asks from the past two weeks of notes.",
                 "area": "work",
                 "status": "open",
-                "task_type": "focus",
+                "task_type": "main",
                 "parent_id": roadmap_id,
             },
             {
@@ -280,7 +323,7 @@ def seed_initial_tasks():
                 "details": "Limit it to goals, bets, and risks.",
                 "area": "work",
                 "status": "open",
-                "task_type": "focus",
+                "task_type": "main",
                 "parent_id": roadmap_id,
             },
             {
@@ -288,7 +331,7 @@ def seed_initial_tasks():
                 "details": "Start with wakeup and run-queue selection. Keep this in Today until the shape is clear.",
                 "area": "work",
                 "status": "open",
-                "task_type": "focus",
+                "task_type": "main",
                 "planned_for": today,
             },
             {
@@ -339,6 +382,7 @@ def seed_initial_tasks():
 
 ensure_tasks_schema()
 metadata.create_all(engine)
+normalize_task_rows()
 seed_initial_tasks()
 
 

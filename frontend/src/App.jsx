@@ -13,6 +13,14 @@ const NAV_ITEMS = [
   { id: "all", label: "All Open", description: "Full open inventory" },
 ];
 
+const CHECKBACK_OPTIONS = [
+  { label: "1h", hours: 1 },
+  { label: "2h", hours: 2 },
+  { label: "6h", hours: 6 },
+  { label: "1d", days: 1 },
+  { label: "2d", days: 2 },
+];
+
 function App() {
   const [tasks, setTasks] = useState([]);
   const [view, setView] = useState("dashboard");
@@ -132,12 +140,6 @@ function App() {
   }
 
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
-  const childCounts = tasks.reduce((counts, task) => {
-    if (task.parentId) {
-      counts[task.parentId] = (counts[task.parentId] ?? 0) + 1;
-    }
-    return counts;
-  }, {});
 
   const rootTasks = tasks.filter((task) => task.parentId === null);
   const openRootTasks = sortTasks(rootTasks.filter((task) => task.status === "open"));
@@ -166,10 +168,6 @@ function App() {
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const searchResults = normalizedQuery
     ? sortTasks(rootTasks.filter((task) => matchesTask(task, normalizedQuery)))
-    : [];
-
-  const selectedSubtasks = selectedTask
-    ? sortTasks(tasks.filter((task) => task.parentId === selectedTask.id))
     : [];
 
   async function handleCreateTask(event) {
@@ -229,23 +227,6 @@ function App() {
     await patchTask(taskId, {
       plannedFor: task.plannedFor === todayKey ? null : todayKey,
       status: task.status === "done" ? "open" : task.status,
-    });
-  }
-
-  async function handleAddSubtask(parentId, title) {
-    const cleanTitle = title.trim();
-    if (!cleanTitle) {
-      return;
-    }
-
-    const parent = tasks.find((task) => task.id === parentId);
-    await createTask({
-      title: cleanTitle,
-      area: parent?.area ?? "work",
-      status: "open",
-      taskType: "focus",
-      parentId,
-      details: "",
     });
   }
 
@@ -348,7 +329,7 @@ function App() {
               </label>
 
               <button className="primary-button" disabled={isSaving} type="submit">
-                Save to backlog
+                Create
               </button>
             </div>
           </form>
@@ -369,7 +350,6 @@ function App() {
 
         {normalizedQuery ? (
           <TaskCollection
-            childCounts={childCounts}
             description={`Results for "${searchQuery.trim()}"`}
             emptyState="No task matches that search."
             onSelect={setSelectedTaskId}
@@ -384,7 +364,6 @@ function App() {
         ) : view === "dashboard" ? (
           <div className="dashboard-grid">
             <TaskCollection
-              childCounts={childCounts}
               description="The few tasks you have deliberately pulled into today."
               emptyState="Nothing selected for today yet."
               onSelect={setSelectedTaskId}
@@ -398,7 +377,6 @@ function App() {
             />
 
             <TaskCollection
-              childCounts={childCounts}
               description="Deadlines that can become expensive if ignored."
               emptyState="No deadlines in the danger window."
               onSelect={setSelectedTaskId}
@@ -412,7 +390,6 @@ function App() {
             />
 
             <TaskCollection
-              childCounts={childCounts}
               description="Tasks blocked on time, CI, or someone else."
               emptyState="No blocked items right now."
               onSelect={setSelectedTaskId}
@@ -426,7 +403,6 @@ function App() {
             />
 
             <TaskCollection
-              childCounts={childCounts}
               description="Things worth keeping without making them active."
               emptyState="Backlog is empty."
               onSelect={setSelectedTaskId}
@@ -441,7 +417,6 @@ function App() {
           </div>
         ) : (
           <TaskCollection
-            childCounts={childCounts}
             description={getViewDescription(view)}
             emptyState={getViewEmptyState(view)}
             onSelect={setSelectedTaskId}
@@ -460,13 +435,11 @@ function App() {
         {selectedTask ? (
           <TaskInspector
             key={selectedTask.id}
-            onAddSubtask={handleAddSubtask}
             onClose={() => setSelectedTaskId(null)}
             onSetStatus={handleSetTaskStatus}
             onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
             onUpdateTask={patchTask}
-            subtasks={selectedSubtasks}
             task={selectedTask}
             todayKey={todayKey}
           />
@@ -474,7 +447,7 @@ function App() {
           <div className="empty-inspector">
             <p className="eyebrow">Detail</p>
             <h3>Select a task</h3>
-            <p>Use the center panels to edit details, dates, type, and subtasks.</p>
+            <p>Use the center panels to edit details, dates, type, and status.</p>
           </div>
         )}
       </aside>
@@ -489,7 +462,6 @@ function TaskCollection({
   tasks,
   todayKey,
   selectedTaskId,
-  childCounts,
   onSelect,
   onToggleToday,
   onSetTaskType,
@@ -510,7 +482,6 @@ function TaskCollection({
           {tasks.map((task) => (
             <TaskCard
               key={task.id}
-              childCount={childCounts[task.id] ?? 0}
               isSelected={selectedTaskId === task.id}
               onSelect={() => onSelect(task.id)}
               onSetStatus={(status) => onSetStatus(task.id, status)}
@@ -530,7 +501,7 @@ function TaskCollection({
   );
 }
 
-function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleToday, onSetTaskType, onSetStatus }) {
+function TaskCard({ task, isSelected, todayKey, onSelect, onToggleToday, onSetTaskType, onSetStatus }) {
   const statusTone = getTimingTone(task);
 
   return (
@@ -538,7 +509,7 @@ function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleTo
       <div className="task-card__topline">
         <div className="task-card__badges">
           <span className={`badge badge--${task.area}`}>{task.area}</span>
-          <span className="badge badge--soft">{task.taskType}</span>
+          <span className="badge badge--soft">{formatTaskType(task.taskType)}</span>
           {task.plannedFor === todayKey ? <span className="badge">today</span> : null}
         </div>
         <button
@@ -559,16 +530,11 @@ function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleTo
       <div className="task-card__meta">
         {task.dueAt ? (
           <span className={`task-card__meta-pill task-card__meta-pill--${statusTone}`}>
-            Due {formatShortMoment(task.dueAt)}
+            Due {formatDueDate(task.dueAt)}
           </span>
         ) : null}
         {task.followUpAt ? (
           <span className="task-card__meta-pill">Check {formatRelativeMoment(task.followUpAt)}</span>
-        ) : null}
-        {childCount > 0 ? (
-          <span className="task-card__meta-pill">
-            {childCount} subtask{childCount === 1 ? "" : "s"}
-          </span>
         ) : null}
       </div>
 
@@ -584,14 +550,14 @@ function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleTo
           {task.plannedFor === todayKey ? "Unplan" : "Today"}
         </button>
         <button
-          className={`mini-button ${task.taskType === "focus" ? "mini-button--active" : ""}`}
+          className={`mini-button ${task.taskType === "main" ? "mini-button--active" : ""}`}
           onClick={(event) => {
             event.stopPropagation();
-            onSetTaskType("focus");
+            onSetTaskType("main");
           }}
           type="button"
         >
-          Focus
+          Main
         </button>
         <button
           className={`mini-button ${task.taskType === "blocked" ? "mini-button--active" : ""}`}
@@ -602,6 +568,16 @@ function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleTo
           type="button"
         >
           Blocked
+        </button>
+        <button
+          className={`mini-button ${task.taskType === "deadline" ? "mini-button--active" : ""}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSetTaskType("deadline");
+          }}
+          type="button"
+        >
+          Deadline
         </button>
         <button
           className={`mini-button ${task.taskType === "backlog" ? "mini-button--active" : ""}`}
@@ -628,9 +604,8 @@ function TaskCard({ task, childCount, isSelected, todayKey, onSelect, onToggleTo
   );
 }
 
-function TaskInspector({ task, subtasks, todayKey, onClose, onUpdateTask, onToggleToday, onAddSubtask, onSetStatus, onSetTaskType }) {
+function TaskInspector({ task, todayKey, onClose, onUpdateTask, onToggleToday, onSetStatus, onSetTaskType }) {
   const [draft, setDraft] = useState(createDraft(task));
-  const [subtaskTitle, setSubtaskTitle] = useState("");
 
   useEffect(() => {
     setDraft(createDraft(task));
@@ -638,12 +613,6 @@ function TaskInspector({ task, subtasks, todayKey, onClose, onUpdateTask, onTogg
 
   async function saveField(fieldName, value) {
     await onUpdateTask(task.id, { [fieldName]: value });
-  }
-
-  async function handleAddSubtask(event) {
-    event.preventDefault();
-    await onAddSubtask(task.id, subtaskTitle);
-    setSubtaskTitle("");
   }
 
   return (
@@ -705,43 +674,65 @@ function TaskInspector({ task, subtasks, todayKey, onClose, onUpdateTask, onTogg
 
       <div className="field-group">
         <span className="field-group__label">Type</span>
-        <div className="segmented-control">
-          {["focus", "backlog", "blocked", "deadline"].map((taskType) => (
+        <div className="segmented-control segmented-control--four-up">
+          {["main", "blocked", "deadline", "backlog"].map((taskType) => (
             <button
               key={taskType}
               className={`segmented-control__button ${task.taskType === taskType ? "segmented-control__button--active" : ""}`}
               onClick={() => onSetTaskType(task.id, taskType)}
               type="button"
             >
-              {taskType}
+              {formatTaskType(taskType)}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="field-grid">
-        <label className="field">
-          <span>Due at</span>
-          <input
-            disabled={task.taskType !== "deadline"}
-            onBlur={() => saveField("dueAt", localInputToIso(draft.dueAt))}
-            onChange={(event) => setDraft((current) => ({ ...current, dueAt: event.target.value }))}
-            type="datetime-local"
-            value={draft.dueAt}
-          />
-        </label>
+      {task.taskType === "deadline" ? (
+        <div className="field-group">
+          <label className="field">
+            <span>Due date</span>
+            <input
+              onBlur={() => saveField("dueAt", localDateToIso(draft.dueDate))}
+              onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))}
+              type="date"
+              value={draft.dueDate}
+            />
+          </label>
+        </div>
+      ) : null}
 
-        <label className="field">
-          <span>Check back at</span>
-          <input
-            disabled={task.taskType !== "blocked"}
-            onBlur={() => saveField("followUpAt", localInputToIso(draft.followUpAt))}
-            onChange={(event) => setDraft((current) => ({ ...current, followUpAt: event.target.value }))}
-            type="datetime-local"
-            value={draft.followUpAt}
-          />
-        </label>
-      </div>
+      {task.taskType === "blocked" ? (
+        <div className="field-group">
+          <span className="field-group__label">Check back</span>
+          <div className="segmented-control segmented-control--five-up">
+            {CHECKBACK_OPTIONS.map((option) => (
+              <button
+                key={option.label}
+                className="segmented-control__button"
+                onClick={() => saveField("followUpAt", createFollowUpIso(option))}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {task.followUpAt ? (
+            <p className="field-help">
+              Current check back: {formatRelativeMoment(task.followUpAt)}
+            </p>
+          ) : null}
+          {task.followUpAt ? (
+            <button
+              className="ghost-button ghost-button--inline"
+              onClick={() => saveField("followUpAt", null)}
+              type="button"
+            >
+              Clear check back
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="field-group">
         <button
@@ -765,44 +756,6 @@ function TaskInspector({ task, subtasks, todayKey, onClose, onUpdateTask, onTogg
           />
         </label>
       </div>
-
-      <section className="subtask-section">
-        <div className="subtask-section__header">
-          <div>
-            <p className="eyebrow">Subtasks</p>
-            <h4>Break the work down when it helps</h4>
-          </div>
-          <span className="panel__count">{subtasks.length}</span>
-        </div>
-
-        {subtasks.length > 0 ? (
-          <div className="subtask-list">
-            {subtasks.map((subtask) => (
-              <label key={subtask.id} className="subtask-row">
-                <input
-                  checked={subtask.status === "done"}
-                  onChange={(event) => onSetStatus(subtask.id, event.target.checked ? "done" : "open")}
-                  type="checkbox"
-                />
-                <span>{subtask.title}</span>
-              </label>
-            ))}
-          </div>
-        ) : (
-          <p className="empty-subtasks">No subtasks yet.</p>
-        )}
-
-        <form className="subtask-form" onSubmit={handleAddSubtask}>
-          <input
-            onChange={(event) => setSubtaskTitle(event.target.value)}
-            placeholder="Add a subtask"
-            value={subtaskTitle}
-          />
-          <button className="secondary-button" type="submit">
-            Add
-          </button>
-        </form>
-      </section>
     </div>
   );
 }
@@ -811,8 +764,7 @@ function createDraft(task) {
   return {
     title: task.title,
     details: task.details,
-    dueAt: isoToLocalInput(task.dueAt),
-    followUpAt: isoToLocalInput(task.followUpAt),
+    dueDate: isoToDateInput(task.dueAt),
   };
 }
 
@@ -896,7 +848,7 @@ function getViewDescription(viewId) {
     case "dashboard":
       return "Your high-signal command center.";
     case "work":
-      return "Open work tasks across focus, blocked, backlog, and deadlines.";
+      return "Open work tasks across main, blocked, backlog, and deadlines.";
     case "life":
       return "Open life tasks that should not disappear.";
     case "blocked":
@@ -954,22 +906,47 @@ function getViewTasks(viewId, openRootTasks, workTasks, lifeTasks, blockedTasks,
   }
 }
 
-function isoToLocalInput(value) {
+function formatTaskType(taskType) {
+  switch (taskType) {
+    case "main":
+      return "Main";
+    case "blocked":
+      return "Blocked";
+    case "deadline":
+      return "Deadline";
+    case "backlog":
+      return "Backlog";
+    default:
+      return taskType;
+  }
+}
+
+function formatDueDate(value) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function isoToDateInput(value) {
   if (!value) {
     return "";
   }
 
-  const date = new Date(value);
-  const offset = date.getTimezoneOffset();
-  const normalized = new Date(date.getTime() - offset * 60_000);
-  return normalized.toISOString().slice(0, 16);
+  return getLocalDateKey(new Date(value));
 }
 
-function localInputToIso(value) {
+function localDateToIso(value) {
   if (!value) {
     return null;
   }
-  return new Date(value).toISOString();
+  return new Date(`${value}T00:00:00`).toISOString();
+}
+
+function createFollowUpIso(option) {
+  const totalHours = option.days ? option.days * 24 : option.hours;
+  return new Date(Date.now() + totalHours * 60 * 60 * 1000).toISOString();
 }
 
 function getLocalDateKey(date) {
@@ -977,15 +954,6 @@ function getLocalDateKey(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
-}
-
-function formatShortMoment(value) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
 }
 
 function formatRelativeMoment(value) {

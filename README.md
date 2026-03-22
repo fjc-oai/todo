@@ -38,8 +38,7 @@ Or use the helper script:
 - quick capture to backlog
 - `Today`, `Due Soon`, `Blocked`, `Backlog`
 - `Work` and `Life`
-- subtasks
 - due dates and follow-up times
 - `open` / `done` status
-- task types: `focus`, `backlog`, `blocked`, `deadline`
+- task types: `main`, `backlog`, `blocked`, `deadline`
 - persistence in `backend/app.db`

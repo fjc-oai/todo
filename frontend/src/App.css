@@ -1,6 +1,6 @@
 .app-shell {
   display: grid;
-  grid-template-columns: 18rem minmax(0, 1fr) 23rem;
+  grid-template-columns: 18rem minmax(0, 1fr) 29rem;
   gap: 1.25rem;
   min-height: 100svh;
   padding: 1.5rem;
@@ -42,7 +42,6 @@
 .panel h3,
 .task-card h4,
 .inspector h3,
-.subtask-section h4,
 .empty-inspector h3 {
   font-family: var(--font-display);
   color: var(--ink-strong);
@@ -60,8 +59,7 @@
 .nav-item__description,
 .task-card__preview,
 .empty-panel,
-.empty-inspector p,
-.empty-subtasks {
+.empty-inspector p {
   color: var(--ink-soft);
 }
 
@@ -353,8 +351,7 @@
 .task-card__badges,
 .task-card__meta,
 .task-card__actions,
-.inspector__header,
-.subtask-section__header {
+.inspector__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -506,15 +503,14 @@ textarea {
 }
 
 .inspector {
-  padding: 1.15rem;
+  padding: 1.35rem;
   display: grid;
   align-content: start;
-  gap: 1rem;
+  gap: 1.1rem;
 }
 
 .field-group,
-.field,
-.subtask-form {
+.field {
   display: grid;
   gap: 0.45rem;
 }
@@ -531,7 +527,23 @@ textarea {
   gap: 0.45rem;
 }
 
+.segmented-control--four-up,
+.segmented-control--five-up {
+  display: grid;
+}
+
+.segmented-control--four-up {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.segmented-control--five-up {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .segmented-control__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 2.45rem;
   padding: 0.48rem 0.82rem;
   border-radius: 999px;
@@ -539,6 +551,7 @@ textarea {
   background: rgba(255, 255, 255, 0.72);
   color: var(--ink-soft);
   font: inherit;
+  white-space: nowrap;
 }
 
 .segmented-control__button--active {
@@ -547,34 +560,14 @@ textarea {
   color: var(--accent-strong);
 }
 
-.subtask-section {
-  padding-top: 0.6rem;
-  border-top: 1px solid rgba(71, 61, 53, 0.08);
-  display: grid;
-  gap: 0.9rem;
+.field-help {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
 }
 
-.subtask-list {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.subtask-row {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.7rem 0.8rem;
-  border-radius: 0.95rem;
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.subtask-row span {
-  color: var(--ink-strong);
-}
-
-.subtask-form {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+.ghost-button--inline {
+  justify-self: start;
 }
 
 .eyebrow {
@@ -638,5 +631,10 @@ kbd {
   .dashboard-grid,
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .segmented-control--four-up,
+  .segmented-control--five-up {
+    grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr));
   }
 }
