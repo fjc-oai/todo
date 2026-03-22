@@ -253,9 +253,13 @@
 }
 
 .capture-form--compact {
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   align-items: center;
   gap: 0.65rem;
+}
+
+.project-form {
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .capture-input {
@@ -436,6 +440,19 @@
 .task-card__meta,
 .task-card__actions {
   justify-content: flex-start;
+}
+
+.project-card {
+  border-radius: 1.2rem;
+  border: 1px solid rgba(71, 61, 53, 0.08);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.85),
+    rgba(251, 247, 240, 0.8)
+  );
+  padding: 0.7rem 0.85rem;
+  display: grid;
+  gap: 0.4rem;
 }
 
 .task-card h4 {

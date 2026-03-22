@@ -4,14 +4,8 @@ import "./App.css";
 const API = import.meta.env.VITE_API_URL || "/api";
 
 const PRIMARY_TABS = [
-  {
-    id: "today",
-    label: "Today",
-  },
-  {
-    id: "all",
-    label: "All Tasks",
-  },
+  { id: "today", label: "Today" },
+  { id: "all", label: "All Tasks" },
 ];
 
 const AREA_TABS = [
@@ -36,6 +30,7 @@ const CHECKBACK_OPTIONS = [
 
 function App() {
   const [tasks, setTasks] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [primaryTab, setPrimaryTab] = useState("today");
   const [areaTab, setAreaTab] = useState("work");
   const [typeTab, setTypeTab] = useState("main");
@@ -43,13 +38,14 @@ function App() {
   const [captureTitle, setCaptureTitle] = useState("");
   const [captureArea, setCaptureArea] = useState("work");
   const [captureTaskType, setCaptureTaskType] = useState("main");
+  const [captureProjectId, setCaptureProjectId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const todayKey = getLocalDateKey(new Date());
 
   useEffect(() => {
-    loadTasks();
+    loadData();
   }, []);
 
   useEffect(() => {
@@ -76,20 +72,32 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  async function loadTasks() {
+  async function loadData() {
     setLoading(true);
     setError("");
 
     try {
-      const response = await fetch(`${API}/tasks`);
-      if (!response.ok) {
+      const [taskResponse, projectResponse] = await Promise.all([
+        fetch(`${API}/tasks`),
+        fetch(`${API}/projects`),
+      ]);
+
+      if (!taskResponse.ok) {
         throw new Error("Failed to load tasks.");
       }
+      if (!projectResponse.ok) {
+        throw new Error("Failed to load projects.");
+      }
 
-      const data = await response.json();
-      setTasks(data.map(fromApiTask));
+      const [taskData, projectData] = await Promise.all([
+        taskResponse.json(),
+        projectResponse.json(),
+      ]);
+
+      setTasks(taskData.map(fromApiTask));
+      setProjects(projectData.map(fromApiProject));
     } catch (fetchError) {
-      setError(fetchError.message || "Failed to load tasks.");
+      setError(fetchError.message || "Failed to load app data.");
     } finally {
       setLoading(false);
     }
@@ -149,32 +157,78 @@ function App() {
     }
   }
 
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
-  const selectedTaskSubtasks = selectedTask
-    ? sortTasks(tasks.filter((task) => task.parentId === selectedTask.id))
-    : [];
-  const selectedTaskParent = selectedTask?.parentId
-    ? tasks.find((task) => task.id === selectedTask.parentId) ?? null
-    : null;
+  async function createProject(input) {
+    setIsSaving(true);
+    setError("");
 
-  const rootTasks = sortTasks(tasks.filter((task) => task.parentId === null));
-  const childrenByParentId = buildChildrenByParentId(tasks);
-  const openChildrenByParentId = buildChildrenByParentId(tasks.filter((task) => task.status === "open"));
-  const openChildCountByParentId = buildOpenChildCountByParentId(tasks);
-  const openTasks = sortTasks(tasks.filter((task) => task.status === "open"));
-  const doneTasks = sortCompletedTasks(tasks.filter((task) => task.status === "done"));
-  const backlogTasks = sortTasks(
-    openTasks.filter((task) => task.taskType === "backlog"),
-  );
-  const mainTasks = sortTasks(
-    openTasks.filter((task) => task.taskType === "main"),
-  );
-  const blockedTasks = sortTasks(
-    openTasks.filter((task) => task.taskType === "blocked"),
-  );
-  const deadlineTasks = sortTasks(
-    openTasks.filter((task) => task.taskType === "deadline"),
-  );
+    try {
+      const response = await fetch(`${API}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, "Failed to create project."));
+      }
+
+      const createdProject = fromApiProject(await response.json());
+      setProjects((currentProjects) => [createdProject, ...currentProjects]);
+      return createdProject;
+    } catch (fetchError) {
+      setError(fetchError.message || "Failed to create project.");
+      return null;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function patchProject(projectId, patch) {
+    setIsSaving(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API}/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, "Failed to update project."));
+      }
+
+      const updatedProject = fromApiProject(await response.json());
+      setProjects((currentProjects) =>
+        currentProjects.map((project) => (project.id === updatedProject.id ? updatedProject : project)),
+      );
+      return updatedProject;
+    } catch (fetchError) {
+      setError(fetchError.message || "Failed to update project.");
+      return null;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const projectById = projects.reduce((map, project) => {
+    map.set(project.id, project);
+    return map;
+  }, new Map());
+
+  const openTasks = sortTasks(tasks.filter((task) => task.status === "open"), projectById);
+  const doneTasks = sortCompletedTasks(tasks.filter((task) => task.status === "done"), projectById);
+  const mainTasks = sortTasks(openTasks.filter((task) => task.taskType === "main"), projectById);
+  const blockedTasks = sortTasks(openTasks.filter((task) => task.taskType === "blocked"), projectById);
+  const deadlineTasks = sortTasks(openTasks.filter((task) => task.taskType === "deadline"), projectById);
+  const backlogTasks = sortTasks(openTasks.filter((task) => task.taskType === "backlog"), projectById);
+  const workTasks = sortTasks(openTasks.filter((task) => task.area === "work"), projectById);
+  const lifeTasks = sortTasks(openTasks.filter((task) => task.area === "life"), projectById);
+  const openProjects = sortProjects(projects.filter((project) => project.status === "open"));
+  const doneProjects = sortProjects(projects.filter((project) => project.status === "done"));
+  const captureProjects = openProjects.filter((project) => project.area === captureArea);
+
   const todayWorkTasks = sortTasks(
     openTasks.filter(
       (task) =>
@@ -183,6 +237,7 @@ function App() {
         task.taskType !== "blocked" &&
         task.taskType !== "deadline",
     ),
+    projectById,
   );
   const todayLifeTasks = sortTasks(
     openTasks.filter(
@@ -192,52 +247,41 @@ function App() {
         task.taskType !== "blocked" &&
         task.taskType !== "deadline",
     ),
+    projectById,
   );
   const blockedTodayTasks = sortTasks(
     blockedTasks.filter(
       (task) => !task.followUpAt || isOnOrBefore(task.followUpAt, getEndOfLocalDay(new Date())),
     ),
+    projectById,
   );
   const deadlineTodayTasks = sortTasks(
     deadlineTasks.filter((task) => task.dueAt && isOnOrBefore(task.dueAt, getEndOfLocalDay(new Date()))),
+    projectById,
   );
+
   const todayWorkSections = [
-    createTaskSection("main", "Main", todayWorkTasks.filter((task) => task.taskType === "main"), rootTasks, openChildrenByParentId),
-    createTaskSection("blocked", "Blocked", blockedTodayTasks.filter((task) => task.area === "work"), rootTasks, openChildrenByParentId),
-    createTaskSection("deadline", "Deadline", deadlineTodayTasks.filter((task) => task.area === "work"), rootTasks, openChildrenByParentId),
-    createTaskSection("backlog", "Backlog", todayWorkTasks.filter((task) => task.taskType === "backlog"), rootTasks, openChildrenByParentId),
+    { id: "main", title: "Main", tasks: todayWorkTasks.filter((task) => task.taskType === "main") },
+    { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "work") },
+    { id: "deadline", title: "Deadline", tasks: deadlineTodayTasks.filter((task) => task.area === "work") },
+    { id: "backlog", title: "Backlog", tasks: todayWorkTasks.filter((task) => task.taskType === "backlog") },
   ];
   const todayLifeSections = [
-    createTaskSection("blocked", "Blocked", blockedTodayTasks.filter((task) => task.area === "life"), rootTasks, openChildrenByParentId),
-    createTaskSection("deadline", "Deadline", deadlineTodayTasks.filter((task) => task.area === "life"), rootTasks, openChildrenByParentId),
-    createTaskSection("backlog", "Backlog", todayLifeTasks.filter((task) => task.taskType === "backlog"), rootTasks, openChildrenByParentId),
+    { id: "blocked", title: "Blocked", tasks: blockedTodayTasks.filter((task) => task.area === "life") },
+    { id: "deadline", title: "Deadline", tasks: deadlineTodayTasks.filter((task) => task.area === "life") },
+    { id: "backlog", title: "Backlog", tasks: todayLifeTasks.filter((task) => task.taskType === "backlog") },
   ];
-  const workTasks = sortTasks(
-    openTasks.filter((task) => task.area === "work"),
-  );
-  const lifeTasks = sortTasks(
-    openTasks.filter((task) => task.area === "life"),
-  );
   const workSections = [
-    createTaskSection("main", "Main", workTasks.filter((task) => task.taskType === "main"), rootTasks, openChildrenByParentId),
-    createTaskSection("blocked", "Blocked", workTasks.filter((task) => task.taskType === "blocked"), rootTasks, openChildrenByParentId),
-    createTaskSection("deadline", "Deadline", workTasks.filter((task) => task.taskType === "deadline"), rootTasks, openChildrenByParentId),
-    createTaskSection("backlog", "Backlog", workTasks.filter((task) => task.taskType === "backlog"), rootTasks, openChildrenByParentId),
+    { id: "main", title: "Main", tasks: workTasks.filter((task) => task.taskType === "main") },
+    { id: "blocked", title: "Blocked", tasks: workTasks.filter((task) => task.taskType === "blocked") },
+    { id: "deadline", title: "Deadline", tasks: workTasks.filter((task) => task.taskType === "deadline") },
+    { id: "backlog", title: "Backlog", tasks: workTasks.filter((task) => task.taskType === "backlog") },
   ];
   const lifeSections = [
-    createTaskSection("blocked", "Blocked", lifeTasks.filter((task) => task.taskType === "blocked"), rootTasks, openChildrenByParentId),
-    createTaskSection("deadline", "Deadline", lifeTasks.filter((task) => task.taskType === "deadline"), rootTasks, openChildrenByParentId),
-    createTaskSection("backlog", "Backlog", lifeTasks.filter((task) => task.taskType === "backlog"), rootTasks, openChildrenByParentId),
+    { id: "blocked", title: "Blocked", tasks: lifeTasks.filter((task) => task.taskType === "blocked") },
+    { id: "deadline", title: "Deadline", tasks: lifeTasks.filter((task) => task.taskType === "deadline") },
+    { id: "backlog", title: "Backlog", tasks: lifeTasks.filter((task) => task.taskType === "backlog") },
   ];
-  const doneTaskGroups = sortTaskGroupsByCompletedAt(
-    buildTaskGroups(rootTasks, childrenByParentId, doneTasks, { includeAllChildrenForMatchingRoot: false }),
-  );
-  const workTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, workTasks);
-  const lifeTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, lifeTasks);
-  const mainTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, mainTasks);
-  const blockedTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, blockedTasks);
-  const deadlineTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, deadlineTasks);
-  const backlogTaskGroups = buildTaskGroups(rootTasks, openChildrenByParentId, backlogTasks);
   const todayCount =
     todayWorkTasks.length +
     todayLifeTasks.length +
@@ -258,22 +302,19 @@ function App() {
       status: "open",
       taskType: captureTaskType,
       details: "",
+      projectId: captureProjectId ? Number(captureProjectId) : null,
     });
 
     if (task) {
       setCaptureTitle("");
       setCaptureTaskType(captureArea === "work" ? "main" : "backlog");
+      setCaptureProjectId("");
       setSelectedTaskId(task.id);
       setPrimaryTab("all");
     }
   }
 
   async function handleSetTaskStatus(taskId, status) {
-    if (status === "done" && getOpenChildCount(taskId, openChildCountByParentId) > 0) {
-      setError("Finish all open subtasks before marking the parent task done.");
-      return;
-    }
-
     const patch = { status };
     if (status === "done") {
       patch.plannedFor = null;
@@ -313,24 +354,6 @@ function App() {
     });
   }
 
-  async function handleCreateSubtask(parentTaskId, title) {
-    const parentTask = tasks.find((task) => task.id === parentTaskId);
-    if (!parentTask) {
-      return null;
-    }
-
-    const createdTask = await createTask({
-      title,
-      area: parentTask.area,
-      status: "open",
-      taskType: parentTask.area === "work" ? "main" : "backlog",
-      details: "",
-      parentId: parentTaskId,
-    });
-
-    return createdTask;
-  }
-
   const metrics = [
     {
       label: "Selected",
@@ -364,9 +387,7 @@ function App() {
             <button
               key={tab.id}
               className={`nav-item ${primaryTab === tab.id ? "nav-item--active" : ""}`}
-              onClick={() => {
-                setPrimaryTab(tab.id);
-              }}
+              onClick={() => setPrimaryTab(tab.id)}
               type="button"
             >
               <span className="nav-item__copy">
@@ -430,15 +451,24 @@ function App() {
 
           <button
             className={`nav-item ${primaryTab === "done" ? "nav-item--active" : ""}`}
-            onClick={() => {
-              setPrimaryTab("done");
-            }}
+            onClick={() => setPrimaryTab("done")}
             type="button"
           >
             <span className="nav-item__copy">
               <span className="nav-item__label">Done</span>
             </span>
             <span className="nav-item__count">{doneTasks.length}</span>
+          </button>
+
+          <button
+            className={`nav-item ${primaryTab === "projects" ? "nav-item--active" : ""}`}
+            onClick={() => setPrimaryTab("projects")}
+            type="button"
+          >
+            <span className="nav-item__copy">
+              <span className="nav-item__label">Projects</span>
+            </span>
+            <span className="nav-item__count">{openProjects.length}</span>
           </button>
         </nav>
       </aside>
@@ -479,6 +509,16 @@ function App() {
                   const availableTaskTypes = getAvailableTaskTypes(nextArea);
                   return availableTaskTypes.includes(current) ? current : availableTaskTypes[0];
                 });
+                setCaptureProjectId((current) => {
+                  if (!current) {
+                    return "";
+                  }
+                  return openProjects.some(
+                    (project) => String(project.id) === current && project.area === nextArea,
+                  )
+                    ? current
+                    : "";
+                });
               }}
             >
               <option value="work">Work</option>
@@ -493,6 +533,15 @@ function App() {
               ))}
             </select>
 
+            <select value={captureProjectId} onChange={(event) => setCaptureProjectId(event.target.value)}>
+              <option value="">No project</option>
+              {captureProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.title}
+                </option>
+              ))}
+            </select>
+
             <button className="primary-button" disabled={isSaving} type="submit">
               Create
             </button>
@@ -503,26 +552,24 @@ function App() {
           <div className="today-stack">
             <AreaSectionPanel
               emptyState="No work tasks need attention today."
-              getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
+              projectById={projectById}
               sections={todayWorkSections}
+              selectedTaskId={selectedTaskId}
               title="Work"
               todayKey={todayKey}
             />
 
             <AreaSectionPanel
               emptyState="No life tasks need attention today."
-              getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
+              projectById={projectById}
               sections={todayLifeSections}
+              selectedTaskId={selectedTaskId}
               title="Life"
               todayKey={todayKey}
             />
@@ -531,26 +578,24 @@ function App() {
           <div className="today-stack">
             <AreaSectionPanel
               emptyState="No open work tasks."
-              getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
+              projectById={projectById}
               sections={workSections}
+              selectedTaskId={selectedTaskId}
               title="Work"
               todayKey={todayKey}
             />
 
             <AreaSectionPanel
               emptyState="No open life tasks."
-              getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
               onSelect={setSelectedTaskId}
               onSetStatus={handleSetTaskStatus}
-              onSetTaskType={handleSetTaskType}
               onToggleToday={handleToggleToday}
-              selectedTaskId={selectedTaskId}
+              projectById={projectById}
               sections={lifeSections}
+              selectedTaskId={selectedTaskId}
               title="Life"
               todayKey={todayKey}
             />
@@ -558,49 +603,45 @@ function App() {
         ) : primaryTab === "done" ? (
           <TaskCollection
             emptyState="No finished tasks yet."
-            getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
-            onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
-            count={doneTasks.length}
-            groups={doneTaskGroups}
+            projectById={projectById}
             selectedTaskId={selectedTaskId}
+            tasks={doneTasks}
             title="Done"
             todayKey={todayKey}
+          />
+        ) : primaryTab === "projects" ? (
+          <ProjectsBoard
+            doneProjects={doneProjects}
+            isSaving={isSaving}
+            onCreateProject={createProject}
+            onUpdateProject={patchProject}
+            openProjects={openProjects}
+            taskCountByProjectId={buildTaskCountByProjectId(tasks)}
           />
         ) : primaryTab === "areas" ? (
           <TaskCollection
             emptyState={getAreaEmptyState(areaTab)}
-            getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
-            onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
-            count={areaTab === "work" ? workTasks.length : lifeTasks.length}
-            groups={areaTab === "work" ? workTaskGroups : lifeTaskGroups}
+            projectById={projectById}
             selectedTaskId={selectedTaskId}
+            tasks={areaTab === "work" ? workTasks : lifeTasks}
             title={areaTab === "work" ? "Work" : "Life"}
             todayKey={todayKey}
           />
         ) : (
           <TaskCollection
             emptyState={getTypeEmptyState(typeTab)}
-            getOpenChildCount={(taskId) => getOpenChildCount(taskId, openChildCountByParentId)}
-            highlightTaskType={typeTab}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
-            onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
-            count={getTypeTasks(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTasks).length}
-            groups={getTypeTaskGroups(
-              typeTab,
-              mainTaskGroups,
-              blockedTaskGroups,
-              deadlineTaskGroups,
-              backlogTaskGroups,
-            )}
+            projectById={projectById}
             selectedTaskId={selectedTaskId}
+            tasks={getTypeTasks(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTasks)}
             title={formatTaskType(typeTab)}
             todayKey={todayKey}
           />
@@ -610,17 +651,13 @@ function App() {
       <aside className="inspector-shell">
         {selectedTask ? (
           <TaskInspector
-            key={selectedTask.id}
-            onCreateSubtask={handleCreateSubtask}
+            key={`${selectedTask.id}:${selectedTask.updatedAt}`}
             onClose={() => setSelectedTaskId(null)}
-            openSubtaskCount={getOpenChildCount(selectedTask.id, openChildCountByParentId)}
             onSetStatus={handleSetTaskStatus}
             onSetTaskType={handleSetTaskType}
             onToggleToday={handleToggleToday}
             onUpdateTask={patchTask}
-            onSelectTask={setSelectedTaskId}
-            parentTask={selectedTaskParent}
-            subtasks={selectedTaskSubtasks}
+            projects={projects}
             task={selectedTask}
             todayKey={todayKey}
           />
@@ -628,7 +665,7 @@ function App() {
           <div className="empty-inspector">
             <p className="eyebrow">Detail</p>
             <h3>Select a task</h3>
-            <p>Use the center panels to edit details, dates, type, and status.</p>
+            <p>Use the center panels to edit details, dates, type, status, and project.</p>
           </div>
         )}
       </aside>
@@ -639,10 +676,8 @@ function App() {
 function TaskCollection({
   title,
   emptyState,
-  count,
-  groups,
-  getOpenChildCount,
-  highlightTaskType,
+  tasks,
+  projectById,
   todayKey,
   selectedTaskId,
   onSelect,
@@ -653,21 +688,20 @@ function TaskCollection({
     <section className="panel">
       <header className="panel__header">
         <h3>{title}</h3>
-        <span className="panel__count">{count}</span>
+        <span className="panel__count">{tasks.length}</span>
       </header>
 
-      {count > 0 ? (
+      {tasks.length > 0 ? (
         <div className="panel__body">
-          {groups.map((group) => (
-            <TaskTree
-              getOpenChildCount={getOpenChildCount}
-              group={group}
-              highlightTaskType={highlightTaskType}
-              key={group.root.id}
-              onSelect={onSelect}
-              onSetStatus={onSetStatus}
-              onToggleToday={onToggleToday}
-              selectedTaskId={selectedTaskId}
+          {tasks.map((task) => (
+            <TaskCard
+              isSelected={selectedTaskId === task.id}
+              key={task.id}
+              onSelect={() => onSelect(task.id)}
+              onSetStatus={(status) => onSetStatus(task.id, status)}
+              onToggleToday={() => onToggleToday(task.id)}
+              project={task.projectId ? projectById.get(task.projectId) ?? null : null}
+              task={task}
               todayKey={todayKey}
             />
           ))}
@@ -685,15 +719,15 @@ function AreaSectionPanel({
   title,
   sections,
   emptyState,
-  getOpenChildCount,
+  projectById,
   todayKey,
   selectedTaskId,
   onSelect,
   onToggleToday,
   onSetStatus,
 }) {
-  const visibleSections = sections.filter((section) => section.count > 0);
-  const taskCount = sections.reduce((count, section) => count + section.count, 0);
+  const visibleSections = sections.filter((section) => section.tasks.length > 0);
+  const taskCount = sections.reduce((count, section) => count + section.tasks.length, 0);
 
   return (
     <section className="panel">
@@ -708,19 +742,18 @@ function AreaSectionPanel({
             <section className="today-area-panel__section" key={section.id}>
               <div className="today-area-panel__section-header">
                 <h4>{section.title}</h4>
-                <span className="today-area-panel__section-count">{section.count}</span>
+                <span className="today-area-panel__section-count">{section.tasks.length}</span>
               </div>
               <div className="panel__body">
-                {section.groups.map((group) => (
-                  <TaskTree
-                    getOpenChildCount={getOpenChildCount}
-                    group={group}
-                    highlightTaskType={section.id}
-                    key={group.root.id}
-                    onSelect={onSelect}
-                    onSetStatus={onSetStatus}
-                    onToggleToday={onToggleToday}
-                    selectedTaskId={selectedTaskId}
+                {section.tasks.map((task) => (
+                  <TaskCard
+                    isSelected={selectedTaskId === task.id}
+                    key={task.id}
+                    onSelect={() => onSelect(task.id)}
+                    onSetStatus={(status) => onSetStatus(task.id, status)}
+                    onToggleToday={() => onToggleToday(task.id)}
+                    project={task.projectId ? projectById.get(task.projectId) ?? null : null}
+                    task={task}
                     todayKey={todayKey}
                   />
                 ))}
@@ -737,73 +770,14 @@ function AreaSectionPanel({
   );
 }
 
-function TaskTree({
-  group,
-  getOpenChildCount,
-  highlightTaskType,
-  selectedTaskId,
-  todayKey,
-  onSelect,
-  onToggleToday,
-  onSetStatus,
-}) {
-  return (
-    <div className="task-tree">
-      <TaskCard
-        isContextTask={Boolean(highlightTaskType) && group.root.taskType !== highlightTaskType}
-        isSelected={selectedTaskId === group.root.id}
-        openSubtaskCount={getOpenChildCount(group.root.id)}
-        onSelect={() => onSelect(group.root.id)}
-        onSetStatus={(status) => onSetStatus(group.root.id, status)}
-        onToggleToday={() => onToggleToday(group.root.id)}
-        task={group.root}
-        todayKey={todayKey}
-      />
-
-      {group.children.length > 0 ? (
-        <div className="task-tree__children">
-          {group.children.map((child) => (
-            <TaskCard
-              isContextTask={Boolean(highlightTaskType) && child.taskType !== highlightTaskType}
-              isSelected={selectedTaskId === child.id}
-              isSubtask
-              key={child.id}
-              openSubtaskCount={0}
-              onSelect={() => onSelect(child.id)}
-              onSetStatus={(status) => onSetStatus(child.id, status)}
-              onToggleToday={() => onToggleToday(child.id)}
-              task={child}
-              todayKey={todayKey}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function TaskCard({
-  task,
-  isContextTask = false,
-  isSelected,
-  isSubtask = false,
-  openSubtaskCount = 0,
-  todayKey,
-  onSelect,
-  onToggleToday,
-  onSetStatus,
-}) {
+function TaskCard({ task, project, isSelected, todayKey, onSelect, onToggleToday, onSetStatus }) {
   const statusTone = getTimingTone(task);
   const isPlannedToday = task.plannedFor === todayKey;
-  const doneDisabled = task.status !== "done" && openSubtaskCount > 0;
 
   return (
-    <article
-      className={`task-card ${isSelected ? "task-card--selected" : ""} ${isSubtask ? "task-card--subtask" : ""} ${isContextTask ? "task-card--context" : ""}`}
-      onClick={onSelect}
-    >
+    <article className={`task-card ${isSelected ? "task-card--selected" : ""}`} onClick={onSelect}>
       <div className="task-card__topline">
-        <h4>{task.title}</h4>
+        <h4>{formatTaskTitle(task, project)}</h4>
         <div className="task-card__topline-actions">
           <button
             className="ghost-button"
@@ -817,12 +791,10 @@ function TaskCard({
           </button>
           <button
             className="ghost-button"
-            disabled={doneDisabled}
             onClick={(event) => {
               event.stopPropagation();
               onSetStatus(task.status === "done" ? "open" : "done");
             }}
-            title={doneDisabled ? "Finish all open subtasks first" : undefined}
             type="button"
           >
             {task.status === "done" ? "Reopen" : "Close"}
@@ -846,44 +818,28 @@ function TaskCard({
 
 function TaskInspector({
   task,
-  parentTask,
-  subtasks,
-  openSubtaskCount,
+  projects,
   todayKey,
   onClose,
-  onCreateSubtask,
   onUpdateTask,
   onToggleToday,
   onSetStatus,
   onSetTaskType,
-  onSelectTask,
 }) {
   const [draft, setDraft] = useState(createDraft(task));
-  const [subtaskTitle, setSubtaskTitle] = useState("");
-
-  useEffect(() => {
-    setDraft(createDraft(task));
-  }, [task]);
 
   async function saveField(fieldName, value) {
     await onUpdateTask(task.id, { [fieldName]: value });
   }
 
   const availableTaskTypes = getAvailableTaskTypes(task.area);
-  const isSubtask = task.parentId !== null;
-
-  async function handleCreateSubtask(event) {
-    event.preventDefault();
-    const title = subtaskTitle.trim();
-    if (!title) {
-      return;
-    }
-
-    const created = await onCreateSubtask(task.id, title);
-    if (created) {
-      setSubtaskTitle("");
-    }
-  }
+  const areaProjects = sortProjects(
+    projects.filter(
+      (project) =>
+        project.area === task.area &&
+        (project.status === "open" || project.id === task.projectId),
+    ),
+  );
 
   return (
     <div className="inspector">
@@ -891,7 +847,6 @@ function TaskInspector({
         <div>
           <p className="eyebrow">Task detail</p>
           <h3>{task.title}</h3>
-          {parentTask ? <p className="inspector__context">Subtask of {parentTask.title}</p> : null}
         </div>
         <button className="ghost-button" onClick={onClose} type="button">
           Close
@@ -919,13 +874,11 @@ function TaskInspector({
                 className={`segmented-control__button ${task.area === area ? "segmented-control__button--active" : ""}`}
                 onClick={() => saveField("area", area)}
                 type="button"
-                disabled={isSubtask}
               >
                 {area}
               </button>
             ))}
           </div>
-          {isSubtask ? <p className="field-help">Area is inherited from the parent task.</p> : null}
         </div>
 
         <div className="field-group">
@@ -937,7 +890,6 @@ function TaskInspector({
                 className={`segmented-control__button ${task.status === status ? "segmented-control__button--active" : ""}`}
                 onClick={() => onSetStatus(task.id, status)}
                 type="button"
-                disabled={status === "done" && openSubtaskCount > 0}
               >
                 {status}
               </button>
@@ -964,6 +916,26 @@ function TaskInspector({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="field-group">
+        <label className="field">
+          <span>Project</span>
+          <select
+            onChange={(event) => {
+              const value = event.target.value;
+              saveField("projectId", value ? Number(value) : null);
+            }}
+            value={task.projectId ?? ""}
+          >
+            <option value="">No project</option>
+            {areaProjects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.status === "done" ? `${project.title} (closed)` : project.title}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {task.taskType === "deadline" ? (
@@ -1034,48 +1006,111 @@ function TaskInspector({
           />
         </label>
       </div>
-
-      {!isSubtask ? (
-        <div className="field-group">
-          <div className="subtask-section__header">
-            <span className="field-group__label">Subtasks</span>
-            <span className="today-area-panel__section-count">{subtasks.length}</span>
-          </div>
-
-          {subtasks.length > 0 ? (
-            <div className="subtask-list">
-              {subtasks.map((subtask) => (
-                <button
-                  key={subtask.id}
-                  className="subtask-row"
-                  onClick={() => onSelectTask(subtask.id)}
-                  type="button"
-                >
-                  <span className="subtask-row__title">{subtask.title}</span>
-                  <span className="subtask-row__meta">
-                    {formatTaskType(subtask.taskType)}
-                    {subtask.status === "done" ? " · done" : ""}
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="field-help">No subtasks yet.</p>
-          )}
-
-          <form className="subtask-form" onSubmit={handleCreateSubtask}>
-            <input
-              onChange={(event) => setSubtaskTitle(event.target.value)}
-              placeholder="Add a subtask"
-              value={subtaskTitle}
-            />
-            <button className="secondary-button" disabled={!subtaskTitle.trim()} type="submit">
-              Add
-            </button>
-          </form>
-        </div>
-      ) : null}
     </div>
+  );
+}
+
+function ProjectsBoard({ openProjects, doneProjects, taskCountByProjectId, onCreateProject, onUpdateProject, isSaving }) {
+  const [projectTitle, setProjectTitle] = useState("");
+  const [projectArea, setProjectArea] = useState("work");
+
+  async function handleCreateProject(event) {
+    event.preventDefault();
+    const title = projectTitle.trim();
+    if (!title) {
+      return;
+    }
+
+    const created = await onCreateProject({
+      title,
+      area: projectArea,
+      status: "open",
+    });
+
+    if (created) {
+      setProjectTitle("");
+    }
+  }
+
+  return (
+    <div className="today-stack">
+      <section className="capture-panel">
+        <form className="capture-form capture-form--compact project-form" onSubmit={handleCreateProject}>
+          <input
+            autoComplete="off"
+            className="capture-input"
+            onChange={(event) => setProjectTitle(event.target.value)}
+            placeholder="Create a project"
+            value={projectTitle}
+          />
+          <select value={projectArea} onChange={(event) => setProjectArea(event.target.value)}>
+            <option value="work">Work</option>
+            <option value="life">Life</option>
+          </select>
+          <button className="primary-button" disabled={isSaving || !projectTitle.trim()} type="submit">
+            Create
+          </button>
+        </form>
+      </section>
+
+      <ProjectCollection
+        emptyState="No open projects."
+        onUpdateProject={onUpdateProject}
+        projects={openProjects}
+        taskCountByProjectId={taskCountByProjectId}
+        title="Open projects"
+      />
+
+      <ProjectCollection
+        emptyState="No closed projects."
+        onUpdateProject={onUpdateProject}
+        projects={doneProjects}
+        taskCountByProjectId={taskCountByProjectId}
+        title="Closed projects"
+      />
+    </div>
+  );
+}
+
+function ProjectCollection({ title, projects, emptyState, taskCountByProjectId, onUpdateProject }) {
+  return (
+    <section className="panel">
+      <header className="panel__header">
+        <h3>{title}</h3>
+        <span className="panel__count">{projects.length}</span>
+      </header>
+
+      {projects.length > 0 ? (
+        <div className="panel__body">
+          {projects.map((project) => (
+            <article className="project-card" key={project.id}>
+              <div className="task-card__topline">
+                <h4>{project.title}</h4>
+                <div className="task-card__topline-actions">
+                  <button
+                    className="ghost-button"
+                    onClick={() => onUpdateProject(project.id, { status: project.status === "done" ? "open" : "done" })}
+                    type="button"
+                  >
+                    {project.status === "done" ? "Reopen" : "Close"}
+                  </button>
+                </div>
+              </div>
+              <div className="task-card__meta">
+                <span className="task-card__meta-pill">{project.area}</span>
+                <span className="task-card__meta-pill">
+                  {taskCountByProjectId.get(project.id) ?? 0} tasks
+                </span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-panel">
+          <p>{emptyState}</p>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1084,6 +1119,17 @@ function createDraft(task) {
     title: task.title,
     details: task.details,
     dueDate: isoToDateInput(task.dueAt),
+  };
+}
+
+function fromApiProject(project) {
+  return {
+    id: project.id,
+    title: project.title,
+    area: project.area,
+    status: project.status,
+    createdAt: project.created_at,
+    updatedAt: project.updated_at,
   };
 }
 
@@ -1098,7 +1144,7 @@ function fromApiTask(task) {
     dueAt: task.due_at,
     followUpAt: task.follow_up_at,
     plannedFor: task.planned_for,
-    parentId: task.parent_id,
+    projectId: task.project_id,
     createdAt: task.created_at,
     updatedAt: task.updated_at,
     completedAt: task.completed_at,
@@ -1115,7 +1161,7 @@ function toApiTaskPayload(task) {
   if ("dueAt" in task) payload.due_at = task.dueAt;
   if ("followUpAt" in task) payload.follow_up_at = task.followUpAt;
   if ("plannedFor" in task) payload.planned_for = task.plannedFor;
-  if ("parentId" in task) payload.parent_id = task.parentId;
+  if ("projectId" in task) payload.project_id = task.projectId;
   if ("completedAt" in task) payload.completed_at = task.completedAt;
   return payload;
 }
@@ -1196,106 +1242,6 @@ function getTypeTasks(typeTab, mainTasks, blockedTasks, deadlineTasks, backlogTa
   }
 }
 
-function getTypeTaskGroups(typeTab, mainGroups, blockedGroups, deadlineGroups, backlogGroups) {
-  switch (typeTab) {
-    case "main":
-      return mainGroups;
-    case "blocked":
-      return blockedGroups;
-    case "deadline":
-      return deadlineGroups;
-    case "backlog":
-      return backlogGroups;
-    default:
-      return mainGroups;
-  }
-}
-
-function createTaskSection(id, title, tasks, rootTasks, childrenByParentId) {
-  return {
-    id,
-    title,
-    tasks,
-    count: tasks.length,
-    groups: buildTaskGroups(rootTasks, childrenByParentId, tasks),
-  };
-}
-
-function buildChildrenByParentId(tasks) {
-  const childrenByParentId = new Map();
-
-  tasks.forEach((task) => {
-    if (task.parentId === null) {
-      return;
-    }
-
-    const children = childrenByParentId.get(task.parentId) ?? [];
-    children.push(task);
-    childrenByParentId.set(task.parentId, children);
-  });
-
-  childrenByParentId.forEach((children, parentId) => {
-    childrenByParentId.set(parentId, sortTasks(children));
-  });
-
-  return childrenByParentId;
-}
-
-function buildOpenChildCountByParentId(tasks) {
-  return tasks.reduce((counts, task) => {
-    if (task.parentId === null || task.status !== "open") {
-      return counts;
-    }
-
-    counts.set(task.parentId, (counts.get(task.parentId) ?? 0) + 1);
-    return counts;
-  }, new Map());
-}
-
-function getOpenChildCount(taskId, openChildCountByParentId) {
-  return openChildCountByParentId.get(taskId) ?? 0;
-}
-
-function buildTaskGroups(
-  rootTasks,
-  childrenByParentId,
-  visibleTasks,
-  { includeAllChildrenForMatchingRoot = true } = {},
-) {
-  const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
-
-  return rootTasks.reduce((groups, rootTask) => {
-    const childTasks = childrenByParentId.get(rootTask.id) ?? [];
-    const visibleChildren = childTasks.filter((task) => visibleTaskIds.has(task.id));
-    const rootIsVisible = visibleTaskIds.has(rootTask.id);
-
-    if (!rootIsVisible && visibleChildren.length === 0) {
-      return groups;
-    }
-
-    groups.push({
-      root: rootTask,
-      children: rootIsVisible && includeAllChildrenForMatchingRoot ? childTasks : visibleChildren,
-    });
-
-    return groups;
-  }, []);
-}
-
-function sortTaskGroupsByCompletedAt(groups) {
-  return [...groups].sort((left, right) => getGroupLatestCompletedAt(right) - getGroupLatestCompletedAt(left));
-}
-
-function getGroupLatestCompletedAt(group) {
-  return [group.root, ...group.children].reduce((latestTimestamp, task) => {
-    if (!task.completedAt) {
-      return latestTimestamp;
-    }
-
-    return Math.max(latestTimestamp, new Date(task.completedAt).getTime());
-  }, 0);
-}
-
 function formatTaskType(taskType) {
   switch (taskType) {
     case "main":
@@ -1311,6 +1257,13 @@ function formatTaskType(taskType) {
   }
 }
 
+function formatTaskTitle(task, project) {
+  if (!project) {
+    return task.title;
+  }
+  return `[${project.title}] ${task.title}`;
+}
+
 function formatDueDate(value) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -1323,7 +1276,6 @@ function isoToDateInput(value) {
   if (!value) {
     return "";
   }
-
   return getLocalDateKey(new Date(value));
 }
 
@@ -1359,97 +1311,100 @@ function isOnOrBefore(value, deadline) {
   return new Date(value).getTime() <= deadline.getTime();
 }
 
-function formatRelativeMoment(value) {
-  const deltaMinutes = Math.round((new Date(value).getTime() - Date.now()) / 60_000);
-  if (Math.abs(deltaMinutes) < 60) {
-    return `${Math.abs(deltaMinutes)}m ${deltaMinutes >= 0 ? "from now" : "ago"}`;
-  }
-
-  const deltaHours = Math.round(deltaMinutes / 60);
-  if (Math.abs(deltaHours) < 24) {
-    return `${Math.abs(deltaHours)}h ${deltaHours >= 0 ? "from now" : "ago"}`;
-  }
-
-  const deltaDays = Math.round(deltaHours / 24);
-  return `${Math.abs(deltaDays)}d ${deltaDays >= 0 ? "from now" : "ago"}`;
+function sortTasks(list, projectById = new Map()) {
+  return [...list].sort((left, right) => compareTasksByProject(left, right, projectById, "updatedAt"));
 }
 
-function isWithinDays(value, days) {
-  if (!value) {
-    return false;
-  }
-  const delta = new Date(value).getTime() - Date.now();
-  return delta <= days * 24 * 60 * 60 * 1000;
+function sortCompletedTasks(list, projectById = new Map()) {
+  return [...list].sort((left, right) => compareTasksByProject(left, right, projectById, "completedAt"));
 }
 
-function isOverdue(value) {
-  if (!value) {
-    return false;
+function sortProjects(list) {
+  return [...list].sort((left, right) => {
+    const leftTime = new Date(left.updatedAt).getTime();
+    const rightTime = new Date(right.updatedAt).getTime();
+    return rightTime - leftTime;
+  });
+}
+
+function buildTaskCountByProjectId(tasks) {
+  return tasks.reduce((counts, task) => {
+    if (task.projectId === null) {
+      return counts;
+    }
+
+    counts.set(task.projectId, (counts.get(task.projectId) ?? 0) + 1);
+    return counts;
+  }, new Map());
+}
+
+function compareTasksByProject(left, right, projectById, timeField) {
+  const leftProject = left.projectId ? projectById.get(left.projectId) ?? null : null;
+  const rightProject = right.projectId ? projectById.get(right.projectId) ?? null : null;
+
+  if (leftProject && !rightProject) {
+    return -1;
   }
-  return new Date(value).getTime() < Date.now();
+  if (!leftProject && rightProject) {
+    return 1;
+  }
+
+  if (leftProject && rightProject && leftProject.id !== rightProject.id) {
+    const titleCompare = leftProject.title.localeCompare(rightProject.title, undefined, {
+      sensitivity: "base",
+    });
+    if (titleCompare !== 0) {
+      return titleCompare;
+    }
+    return leftProject.id - rightProject.id;
+  }
+
+  const leftTime = left[timeField] ? new Date(left[timeField]).getTime() : 0;
+  const rightTime = right[timeField] ? new Date(right[timeField]).getTime() : 0;
+  if (rightTime !== leftTime) {
+    return rightTime - leftTime;
+  }
+
+  return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
 }
 
 function getTimingTone(task) {
-  if (isOverdue(task.dueAt)) {
-    return "warning";
+  if (!task.dueAt) {
+    return "soft";
   }
-  if (task.dueAt && isWithinDays(task.dueAt, 2)) {
-    return "accent";
+
+  const dueDate = getLocalDateKey(new Date(task.dueAt));
+  const today = getLocalDateKey(new Date());
+  return dueDate === today ? "warning" : "soft";
+}
+
+function formatRelativeMoment(value) {
+  const deltaMs = new Date(value).getTime() - Date.now();
+  const deltaHours = Math.round(deltaMs / (1000 * 60 * 60));
+  const absoluteHours = Math.abs(deltaHours);
+
+  if (absoluteHours >= 24) {
+    const days = Math.round(absoluteHours / 24);
+    return deltaHours >= 0 ? `in ${days}d` : `${days}d ago`;
   }
-  return "neutral";
+
+  if (absoluteHours === 0) {
+    return "now";
+  }
+
+  return deltaHours >= 0 ? `in ${absoluteHours}h` : `${absoluteHours}h ago`;
 }
 
-function sortTasks(tasks) {
-  return [...tasks].sort((left, right) => {
-    const leftPlanned = left.plannedFor ? 0 : 1;
-    const rightPlanned = right.plannedFor ? 0 : 1;
-    if (leftPlanned !== rightPlanned) {
-      return leftPlanned - rightPlanned;
-    }
-
-    const leftDue = left.dueAt ? new Date(left.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
-    const rightDue = right.dueAt ? new Date(right.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
-    if (leftDue !== rightDue) {
-      return leftDue - rightDue;
-    }
-
-    const leftFollowUp = left.followUpAt ? new Date(left.followUpAt).getTime() : Number.MAX_SAFE_INTEGER;
-    const rightFollowUp = right.followUpAt ? new Date(right.followUpAt).getTime() : Number.MAX_SAFE_INTEGER;
-    if (leftFollowUp !== rightFollowUp) {
-      return leftFollowUp - rightFollowUp;
-    }
-
-    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
-  });
-}
-
-function sortCompletedTasks(tasks) {
-  return [...tasks].sort((left, right) => {
-    const leftCompleted = left.completedAt ? new Date(left.completedAt).getTime() : 0;
-    const rightCompleted = right.completedAt ? new Date(right.completedAt).getTime() : 0;
-    if (leftCompleted !== rightCompleted) {
-      return rightCompleted - leftCompleted;
-    }
-    return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
-  });
-}
-
-async function getApiError(response, fallbackMessage) {
+async function getApiError(response, fallback) {
   try {
     const data = await response.json();
-    if (typeof data?.detail === "string" && data.detail) {
+    if (data && typeof data.detail === "string") {
       return data.detail;
     }
-    if (Array.isArray(data?.detail) && data.detail.length > 0) {
-      return data.detail
-        .map((item) => `${item.loc?.join(".") || "request"}: ${item.msg}`)
-        .join("; ");
-    }
   } catch {
-    // ignore parse errors and use fallback
+    return fallback;
   }
-
-  return fallbackMessage;
+  return fallback;
 }
 
 export default App;

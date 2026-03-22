@@ -34,6 +34,16 @@ VALID_STATUSES = {"open", "done"}
 VALID_TYPES = {"main", "backlog", "blocked", "deadline"}
 
 metadata = sa.MetaData()
+projects = sa.Table(
+    "projects",
+    metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("title", sa.String(255), nullable=False),
+    sa.Column("area", sa.String(20), nullable=False),
+    sa.Column("status", sa.String(20), nullable=False, server_default="open"),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
 tasks = sa.Table(
     "tasks",
     metadata,
@@ -47,15 +57,36 @@ tasks = sa.Table(
     sa.Column("follow_up_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("planned_for", sa.Date, nullable=True),
     sa.Column(
-        "parent_id",
+        "project_id",
         sa.Integer,
-        sa.ForeignKey("tasks.id", ondelete="CASCADE"),
+        sa.ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
     ),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
 )
+
+
+class ProjectCreate(BaseModel):
+    title: str = Field(min_length=1)
+    area: Literal["work", "life"]
+    status: Literal["open", "done"] = "open"
+
+
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1)
+    area: Optional[Literal["work", "life"]] = None
+    status: Optional[Literal["open", "done"]] = None
+
+
+class ProjectOut(BaseModel):
+    id: int
+    title: str
+    area: Literal["work", "life"]
+    status: Literal["open", "done"]
+    created_at: datetime
+    updated_at: datetime
 
 
 class TaskCreate(BaseModel):
@@ -67,7 +98,7 @@ class TaskCreate(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
-    parent_id: Optional[int] = None
+    project_id: Optional[int] = None
     completed_at: Optional[datetime] = None
 
 
@@ -80,7 +111,7 @@ class TaskUpdate(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
-    parent_id: Optional[int] = None
+    project_id: Optional[int] = None
     completed_at: Optional[datetime] = None
 
 
@@ -94,7 +125,7 @@ class TaskOut(BaseModel):
     due_at: Optional[datetime] = None
     follow_up_at: Optional[datetime] = None
     planned_for: Optional[date] = None
-    parent_id: Optional[int] = None
+    project_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
@@ -129,6 +160,17 @@ def map_old_type(row) -> str:
     return "main"
 
 
+def row_to_project(row) -> dict:
+    return {
+        "id": row.id,
+        "title": row.title,
+        "area": row.area,
+        "status": row.status,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
 def row_to_task(row) -> dict:
     return {
         "id": row.id,
@@ -140,7 +182,7 @@ def row_to_task(row) -> dict:
         "due_at": row.due_at,
         "follow_up_at": row.follow_up_at,
         "planned_for": row.planned_for,
-        "parent_id": row.parent_id,
+        "project_id": row.project_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "completed_at": row.completed_at,
@@ -160,46 +202,32 @@ def get_task_or_404(conn, task_id: int):
     return row
 
 
-def has_children(conn, task_id: int) -> bool:
-    child = conn.execute(
-        sa.select(tasks.c.id).where(tasks.c.parent_id == task_id).limit(1)
-    ).first()
-    return child is not None
+def get_project_or_404(conn, project_id: int):
+    row = conn.execute(sa.select(projects).where(projects.c.id == project_id)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return row
 
 
-def has_open_children(conn, task_id: int) -> bool:
-    child = conn.execute(
-        sa.select(tasks.c.id)
-        .where(tasks.c.parent_id == task_id, tasks.c.status == "open")
-        .limit(1)
-    ).first()
-    return child is not None
-
-
-def validate_parent_assignment(conn, task_id: Optional[int], parent_id: int):
-    parent = get_task_or_404(conn, parent_id)
-    if parent.parent_id is not None:
-        raise HTTPException(status_code=400, detail="Subtasks cannot have subtasks")
-
-    if task_id is not None and has_children(conn, task_id):
-        raise HTTPException(
-            status_code=400,
-            detail="A task with subtasks cannot become a subtask",
-        )
-
-    return parent
-
-
-def ensure_tasks_schema():
+def ensure_schema():
     inspector = sa.inspect(engine)
     table_names = inspector.get_table_names()
 
-    if "tasks" not in table_names:
+    if "tasks" not in table_names and "projects" not in table_names:
         metadata.create_all(engine)
         return
 
-    columns = {column["name"] for column in inspector.get_columns("tasks")}
-    expected = {
+    task_columns = (
+        {column["name"] for column in inspector.get_columns("tasks")}
+        if "tasks" in table_names
+        else set()
+    )
+    project_columns = (
+        {column["name"] for column in inspector.get_columns("projects")}
+        if "projects" in table_names
+        else set()
+    )
+    expected_task_columns = {
         "id",
         "title",
         "details",
@@ -209,16 +237,46 @@ def ensure_tasks_schema():
         "due_at",
         "follow_up_at",
         "planned_for",
-        "parent_id",
+        "project_id",
         "created_at",
         "updated_at",
         "completed_at",
     }
+    expected_project_columns = {
+        "id",
+        "title",
+        "area",
+        "status",
+        "created_at",
+        "updated_at",
+    }
 
-    if expected.issubset(columns):
+    needs_task_rebuild = not expected_task_columns.issubset(task_columns)
+    needs_project_rebuild = "projects" not in table_names or not expected_project_columns.issubset(project_columns)
+
+    if not needs_task_rebuild and not needs_project_rebuild:
         return
 
-    create_new_sql = """
+    old_task_rows = []
+    old_project_rows = []
+    if "tasks" in table_names:
+        with engine.begin() as conn:
+            old_task_rows = conn.execute(sa.text("SELECT * FROM tasks ORDER BY id")).mappings().all()
+    if "projects" in table_names:
+        with engine.begin() as conn:
+            old_project_rows = conn.execute(sa.text("SELECT * FROM projects ORDER BY id")).mappings().all()
+
+    create_projects_sql = """
+    CREATE TABLE projects_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title VARCHAR(255) NOT NULL,
+      area VARCHAR(20) NOT NULL,
+      status VARCHAR(20) NOT NULL,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL
+    )
+    """
+    create_tasks_sql = """
     CREATE TABLE tasks_v2 (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title VARCHAR(255) NOT NULL,
@@ -229,132 +287,196 @@ def ensure_tasks_schema():
       due_at DATETIME,
       follow_up_at DATETIME,
       planned_for DATE,
-      parent_id INTEGER REFERENCES tasks_v2(id) ON DELETE CASCADE,
+      project_id INTEGER REFERENCES projects_v2(id) ON DELETE SET NULL,
       created_at DATETIME NOT NULL,
       updated_at DATETIME NOT NULL,
       completed_at DATETIME
     )
     """
-
-    insert_sql = sa.text(
+    insert_project_sql = sa.text(
+        """
+        INSERT INTO projects_v2 (id, title, area, status, created_at, updated_at)
+        VALUES (:id, :title, :area, :status, :created_at, :updated_at)
+        """
+    )
+    insert_task_sql = sa.text(
         """
         INSERT INTO tasks_v2 (
           id, title, details, area, status, task_type, due_at, follow_up_at,
-          planned_for, parent_id, created_at, updated_at, completed_at
+          planned_for, project_id, created_at, updated_at, completed_at
         ) VALUES (
           :id, :title, :details, :area, :status, :task_type, :due_at, :follow_up_at,
-          :planned_for, :parent_id, :created_at, :updated_at, :completed_at
+          :planned_for, :project_id, :created_at, :updated_at, :completed_at
         )
         """
     )
 
+    rows_by_id = {row["id"]: row for row in old_task_rows}
+
     with engine.begin() as conn:
         conn.execute(sa.text("DROP TABLE IF EXISTS tasks_v2"))
-        conn.execute(sa.text(create_new_sql))
-        old_rows = conn.execute(sa.text("SELECT * FROM tasks ORDER BY id")).mappings().all()
+        conn.execute(sa.text("DROP TABLE IF EXISTS projects_v2"))
+        conn.execute(sa.text(create_projects_sql))
+        conn.execute(sa.text(create_tasks_sql))
 
-        for row in old_rows:
-            created_at = row.get("created_at") or utcnow()
-            updated_at = row.get("updated_at") or created_at
+        max_project_id = 0
+        parent_project_map = {}
+
+        for row in old_project_rows:
             mapped = {
                 "id": row["id"],
                 "title": row["title"],
-                "details": row.get("details") or row.get("notes") or "",
                 "area": row.get("area") or "work",
-                "status": row["status"]
-                if row.get("status") in VALID_STATUSES
-                else map_old_status(row.get("status")),
-                "task_type": map_old_type(row),
-                "due_at": row.get("due_at"),
-                "follow_up_at": row.get("follow_up_at"),
+                "status": row.get("status") if row.get("status") in VALID_STATUSES else "open",
+                "created_at": row.get("created_at") or utcnow(),
+                "updated_at": row.get("updated_at") or row.get("created_at") or utcnow(),
+            }
+            max_project_id = max(max_project_id, mapped["id"])
+            conn.execute(insert_project_sql, mapped)
+
+        for row in old_task_rows:
+            project_id = row.get("project_id")
+            parent_id = row.get("parent_id")
+
+            if parent_id is not None:
+                if parent_id not in parent_project_map:
+                    parent_row = rows_by_id.get(parent_id)
+                    created_at = (
+                        (parent_row or {}).get("created_at")
+                        or row.get("created_at")
+                        or utcnow()
+                    )
+                    updated_at = (
+                        (parent_row or {}).get("updated_at")
+                        or created_at
+                    )
+                    max_project_id += 1
+                    conn.execute(
+                        insert_project_sql,
+                        {
+                            "id": max_project_id,
+                            "title": (parent_row or {}).get("title") or f"Imported project {parent_id}",
+                            "area": (parent_row or {}).get("area") or row.get("area") or "work",
+                            "status": "open",
+                            "created_at": created_at,
+                            "updated_at": updated_at,
+                        },
+                    )
+                    parent_project_map[parent_id] = max_project_id
+
+                project_id = parent_project_map[parent_id]
+
+            area = row.get("area") or "work"
+            status = row["status"] if row.get("status") in VALID_STATUSES else map_old_status(row.get("status"))
+            task_type = normalize_area_task_type(area, map_old_type(row))
+            mapped_task = {
+                "id": row["id"],
+                "title": row["title"],
+                "details": row.get("details") or row.get("notes") or "",
+                "area": area,
+                "status": status,
+                "task_type": task_type,
+                "due_at": row.get("due_at") if task_type == "deadline" else None,
+                "follow_up_at": row.get("follow_up_at") if task_type == "blocked" else None,
                 "planned_for": row.get("planned_for"),
-                "parent_id": row.get("parent_id"),
-                "created_at": created_at,
-                "updated_at": updated_at,
+                "project_id": project_id,
+                "created_at": row.get("created_at") or utcnow(),
+                "updated_at": row.get("updated_at") or row.get("created_at") or utcnow(),
                 "completed_at": row.get("completed_at"),
             }
-            conn.execute(insert_sql, mapped)
+            conn.execute(insert_task_sql, mapped_task)
 
-        conn.execute(sa.text("DROP TABLE tasks"))
+        if "tasks" in table_names:
+            conn.execute(sa.text("DROP TABLE tasks"))
+        if "projects" in table_names:
+            conn.execute(sa.text("DROP TABLE projects"))
+
+        conn.execute(sa.text("ALTER TABLE projects_v2 RENAME TO projects"))
         conn.execute(sa.text("ALTER TABLE tasks_v2 RENAME TO tasks"))
 
 
-def normalize_task_rows():
+def normalize_rows():
     with engine.begin() as conn:
-        rows = conn.execute(
-            sa.select(
-                tasks.c.id,
-                tasks.c.status,
-                tasks.c.task_type,
-                tasks.c.due_at,
-                tasks.c.follow_up_at,
-                tasks.c.planned_for,
-            )
-        ).mappings().all()
+        project_rows = conn.execute(sa.select(projects)).all()
+        for row in project_rows:
+            title = row.title.strip()
+            if not title:
+                title = f"Project {row.id}"
+            normalized_status = row.status if row.status in VALID_STATUSES else "open"
+            if title != row.title or normalized_status != row.status:
+                conn.execute(
+                    sa.update(projects)
+                    .where(projects.c.id == row.id)
+                    .values(title=title, status=normalized_status, updated_at=utcnow())
+                )
 
-        for row in rows:
+        task_rows = conn.execute(sa.select(tasks)).all()
+        for row in task_rows:
             updates = {}
-            normalized_status = (
-                row["status"] if row["status"] in VALID_STATUSES else map_old_status(row["status"])
-            )
-            normalized_type = (
-                row["task_type"] if row["task_type"] in VALID_TYPES else map_old_type(row)
-            )
+            normalized_status = row.status if row.status in VALID_STATUSES else map_old_status(row.status)
+            normalized_type = normalize_area_task_type(row.area, row.task_type if row.task_type in VALID_TYPES else map_old_type(row))
 
-            if row["task_type"] == "focus":
-                normalized_type = "main"
-
-            normalized_type = normalize_area_task_type(row.get("area") or "work", normalized_type)
-
-            if normalized_status != row["status"]:
+            if normalized_status != row.status:
                 updates["status"] = normalized_status
-
-            if normalized_type != row["task_type"]:
+            if normalized_type != row.task_type:
                 updates["task_type"] = normalized_type
-
-            if normalized_type != "deadline" and row["due_at"] is not None:
+            if normalized_type != "deadline" and row.due_at is not None:
                 updates["due_at"] = None
-
-            if normalized_type != "blocked" and row["follow_up_at"] is not None:
+            if normalized_type != "blocked" and row.follow_up_at is not None:
                 updates["follow_up_at"] = None
 
+            if row.project_id is not None:
+                project = conn.execute(
+                    sa.select(projects).where(projects.c.id == row.project_id)
+                ).first()
+                if project is None:
+                    updates["project_id"] = None
+                elif project.area != row.area:
+                    updates["area"] = project.area
+                    updates["task_type"] = normalize_area_task_type(project.area, normalized_type)
+
             if updates:
-                conn.execute(sa.update(tasks).where(tasks.c.id == row["id"]).values(**updates))
+                conn.execute(sa.update(tasks).where(tasks.c.id == row.id).values(**updates))
 
 
-def seed_initial_tasks():
+def seed_initial_data():
     with engine.begin() as conn:
-        existing = conn.execute(
+        existing_tasks = conn.execute(
             sa.select(sa.func.count()).select_from(tasks)
         ).scalar_one()
-        if existing > 0:
+        if existing_tasks > 0:
             return
 
         now = utcnow()
         today = now.date()
         roadmap_result = conn.execute(
-            sa.insert(tasks).values(
-                title="Prepare Q2 roadmap draft",
-                details="Turn a loose set of work ideas into a one-page roadmap before the team sync tomorrow.",
+            sa.insert(projects).values(
+                title="Q2 roadmap",
                 area="work",
                 status="open",
-                task_type="main",
-                planned_for=today,
                 created_at=now,
                 updated_at=now,
-                completed_at=None,
             )
         )
-        roadmap_id = roadmap_result.inserted_primary_key[0]
+        roadmap_project_id = roadmap_result.inserted_primary_key[0]
 
         seed_rows = [
+            {
+                "title": "Prepare Q2 roadmap draft",
+                "details": "Turn a loose set of work ideas into a one-page roadmap before the team sync tomorrow.",
+                "area": "work",
+                "status": "open",
+                "task_type": "main",
+                "planned_for": today,
+                "project_id": roadmap_project_id,
+            },
             {
                 "title": "Collect team themes",
                 "details": "Pull the recurring asks from the past two weeks of notes.",
                 "area": "work",
                 "status": "open",
                 "task_type": "main",
-                "parent_id": roadmap_id,
+                "project_id": roadmap_project_id,
             },
             {
                 "title": "Draft the one-pager",
@@ -362,7 +484,7 @@ def seed_initial_tasks():
                 "area": "work",
                 "status": "open",
                 "task_type": "main",
-                "parent_id": roadmap_id,
+                "project_id": roadmap_project_id,
             },
             {
                 "title": "Read scheduler code paths",
@@ -405,30 +527,117 @@ def seed_initial_tasks():
         ]
 
         for row in seed_rows:
-            values = {
-                "due_at": None,
-                "follow_up_at": None,
-                "planned_for": None,
-                "parent_id": None,
-                "created_at": now,
-                "updated_at": now,
-                "completed_at": None,
-                **row,
-            }
-            conn.execute(sa.insert(tasks).values(**values))
+            conn.execute(
+                sa.insert(tasks).values(
+                    due_at=None,
+                    follow_up_at=None,
+                    planned_for=None,
+                    project_id=None,
+                    created_at=now,
+                    updated_at=now,
+                    completed_at=None,
+                    **row,
+                )
+            )
 
 
-ensure_tasks_schema()
+def apply_project_to_task_values(conn, current_task, values):
+    if "project_id" in values:
+        if values["project_id"] is None:
+            return
+
+        project = get_project_or_404(conn, values["project_id"])
+        values["area"] = project.area
+        return
+
+    if "area" in values and current_task.project_id is not None:
+        current_project = get_project_or_404(conn, current_task.project_id)
+        if values["area"] != current_project.area:
+            values["project_id"] = None
+
+
+ensure_schema()
 metadata.create_all(engine)
-normalize_task_rows()
-seed_initial_tasks()
+normalize_rows()
+seed_initial_data()
+
+
+@app.get("/api/projects", response_model=List[ProjectOut])
+def list_projects():
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sa.select(projects).order_by(projects.c.area, projects.c.updated_at.desc())
+        ).all()
+    return [row_to_project(row) for row in rows]
+
+
+@app.post("/api/projects", response_model=ProjectOut)
+def create_project(project: ProjectCreate):
+    now = utcnow()
+    values = project.model_dump()
+    values["title"] = values["title"].strip()
+    if not values["title"]:
+        raise HTTPException(status_code=400, detail="Project title cannot be empty")
+    values["status"] = values["status"] if values["status"] in VALID_STATUSES else "open"
+
+    values["created_at"] = now
+    values["updated_at"] = now
+
+    with engine.begin() as conn:
+        result = conn.execute(sa.insert(projects).values(**values))
+        project_id = result.inserted_primary_key[0]
+        created = get_project_or_404(conn, project_id)
+    return row_to_project(created)
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectOut)
+def update_project(project_id: int, update: ProjectUpdate):
+    values = update.model_dump(exclude_unset=True)
+
+    if "title" in values:
+        values["title"] = values["title"].strip()
+        if not values["title"]:
+            raise HTTPException(status_code=400, detail="Project title cannot be empty")
+
+    if "status" in values and values["status"] not in VALID_STATUSES:
+        values["status"] = "open"
+
+    values["updated_at"] = utcnow()
+
+    with engine.begin() as conn:
+        current = get_project_or_404(conn, project_id)
+
+        if "area" in values and values["area"] != current.area:
+            project_tasks = conn.execute(
+                sa.select(tasks.c.id, tasks.c.task_type).where(tasks.c.project_id == project_id)
+            ).all()
+
+            for project_task in project_tasks:
+                normalized_task_type = normalize_area_task_type(values["area"], project_task.task_type)
+                task_updates = {
+                    "area": values["area"],
+                    "task_type": normalized_task_type,
+                }
+                if normalized_task_type != "deadline":
+                    task_updates["due_at"] = None
+                if normalized_task_type != "blocked":
+                    task_updates["follow_up_at"] = None
+
+                conn.execute(
+                    sa.update(tasks).where(tasks.c.id == project_task.id).values(**task_updates)
+                )
+
+        conn.execute(sa.update(projects).where(projects.c.id == project_id).values(**values))
+        updated = get_project_or_404(conn, project_id)
+
+    return row_to_project(updated)
 
 
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks():
     with engine.begin() as conn:
         rows = conn.execute(
-            sa.select(tasks).order_by(tasks.c.parent_id.is_not(None), tasks.c.updated_at.desc())
+            sa.select(tasks).order_by(tasks.c.updated_at.desc())
         ).all()
     return [row_to_task(row) for row in rows]
 
@@ -445,18 +654,19 @@ def create_task(task: TaskCreate):
         values["due_at"] = None
     if values["task_type"] != "blocked":
         values["follow_up_at"] = None
-    values["task_type"] = normalize_area_task_type(values["area"], values["task_type"])
-
-    values["created_at"] = now
-    values["updated_at"] = now
-
-    if values["status"] == "done" and values["completed_at"] is None:
-        values["completed_at"] = now
 
     with engine.begin() as conn:
-        if values["parent_id"] is not None:
-            parent = validate_parent_assignment(conn, None, values["parent_id"])
-            values["area"] = parent.area
+        if values["project_id"] is not None:
+            project = get_project_or_404(conn, values["project_id"])
+            values["area"] = project.area
+
+        values["task_type"] = normalize_area_task_type(values["area"], values["task_type"])
+        values["created_at"] = now
+        values["updated_at"] = now
+
+        if values["status"] == "done" and values["completed_at"] is None:
+            values["completed_at"] = now
+
         result = conn.execute(sa.insert(tasks).values(**values))
         task_id = result.inserted_primary_key[0]
         created = get_task_or_404(conn, task_id)
@@ -483,30 +693,14 @@ def update_task(task_id: int, update: TaskUpdate):
 
     with engine.begin() as conn:
         current = get_task_or_404(conn, task_id)
-        current_area = current.area
-        current_task_type = current.task_type
+        apply_project_to_task_values(conn, current, values)
 
-        if values.get("status") == "done" and has_open_children(conn, task_id):
-            raise HTTPException(
-                status_code=400,
-                detail="Finish or reopen all subtasks before marking the parent task done",
-            )
-
-        if "parent_id" in values and values["parent_id"] is not None:
-            if values["parent_id"] == task_id:
-                raise HTTPException(status_code=400, detail="Task cannot parent itself")
-            parent = validate_parent_assignment(conn, task_id, values["parent_id"])
-            values["area"] = parent.area
-        elif current.parent_id is not None:
-            values["area"] = get_task_or_404(conn, current.parent_id).area
-
-        effective_area = values.get("area", current_area)
-        effective_task_type = values.get("task_type", current_task_type)
+        effective_area = values.get("area", current.area)
+        effective_task_type = values.get("task_type", current.task_type)
         values["task_type"] = normalize_area_task_type(effective_area, effective_task_type)
 
         if "task_type" in values and values["task_type"] != "deadline":
             values.setdefault("due_at", None)
-
         if "task_type" in values and values["task_type"] != "blocked":
             values.setdefault("follow_up_at", None)
 
