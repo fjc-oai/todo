@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 
 const API = import.meta.env.VITE_API_URL || "/api";
@@ -37,16 +37,14 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [captureTitle, setCaptureTitle] = useState("");
   const [captureArea, setCaptureArea] = useState("work");
-  const [captureTaskType, setCaptureTaskType] = useState("main");
+  const [captureTaskType, setCaptureTaskType] = useState(getDefaultCaptureTaskType("work"));
   const [captureProjectId, setCaptureProjectId] = useState("");
+  const [todayNoteDraft, setTodayNoteDraft] = useState("");
+  const [todayNoteSavedAt, setTodayNoteSavedAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const todayKey = getLocalDateKey(new Date());
-
-  useEffect(() => {
-    loadData();
-  }, []);
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -72,14 +70,15 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
-      const [taskResponse, projectResponse] = await Promise.all([
+      const [taskResponse, projectResponse, noteResponse] = await Promise.all([
         fetch(`${API}/tasks`),
         fetch(`${API}/projects`),
+        fetch(`${API}/daily-notes/${todayKey}`),
       ]);
 
       if (!taskResponse.ok) {
@@ -93,15 +92,25 @@ function App() {
         taskResponse.json(),
         projectResponse.json(),
       ]);
+      let noteData = { content: "", updated_at: null };
+      if (noteResponse.ok) {
+        noteData = await noteResponse.json();
+      }
 
       setTasks(taskData.map(fromApiTask));
       setProjects(projectData.map(fromApiProject));
+      setTodayNoteDraft(noteData.content || "");
+      setTodayNoteSavedAt(noteData.updated_at || null);
     } catch (fetchError) {
       setError(fetchError.message || "Failed to load app data.");
     } finally {
       setLoading(false);
     }
-  }
+  }, [todayKey]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   async function createTask(input) {
     setIsSaving(true);
@@ -157,6 +166,30 @@ function App() {
     }
   }
 
+  async function deleteTask(taskId) {
+    setIsSaving(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API}/tasks/${taskId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, "Failed to delete task."));
+      }
+
+      setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
+      setSelectedTaskId((currentTaskId) => (currentTaskId === taskId ? null : currentTaskId));
+      return true;
+    } catch (fetchError) {
+      setError(fetchError.message || "Failed to delete task.");
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function createProject(input) {
     setIsSaving(true);
     setError("");
@@ -206,6 +239,31 @@ function App() {
     } catch (fetchError) {
       setError(fetchError.message || "Failed to update project.");
       return null;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveTodayNote() {
+    setIsSaving(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API}/daily-notes/${todayKey}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: todayNoteDraft }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getApiError(response, "Failed to save today's note."));
+      }
+
+      const note = await response.json();
+      setTodayNoteDraft(note.content || "");
+      setTodayNoteSavedAt(note.updated_at || null);
+    } catch (fetchError) {
+      setError(fetchError.message || "Failed to save today's note.");
     } finally {
       setIsSaving(false);
     }
@@ -315,15 +373,15 @@ function App() {
       status: "open",
       taskType: captureTaskType,
       details: "",
+      plannedFor: primaryTab === "today" ? todayKey : null,
       projectId: captureProjectId ? Number(captureProjectId) : null,
     });
 
     if (task) {
       setCaptureTitle("");
-      setCaptureTaskType(captureArea === "work" ? "main" : "backlog");
+      setCaptureTaskType(getDefaultCaptureTaskType(captureArea));
       setCaptureProjectId("");
       setSelectedTaskId(task.id);
-      setPrimaryTab("all");
     }
   }
 
@@ -578,10 +636,7 @@ function App() {
               onChange={(event) => {
                 const nextArea = event.target.value;
                 setCaptureArea(nextArea);
-                setCaptureTaskType((current) => {
-                  const availableTaskTypes = getAvailableTaskTypes(nextArea);
-                  return availableTaskTypes.includes(current) ? current : availableTaskTypes[0];
-                });
+                setCaptureTaskType(getDefaultCaptureTaskType(nextArea));
                 setCaptureProjectId((current) => {
                   if (!current) {
                     return "";
@@ -648,6 +703,13 @@ function App() {
               title="Life"
               todayKey={todayKey}
             />
+            <DailyNotePanel
+              draft={todayNoteDraft}
+              isSaving={isSaving}
+              onChange={setTodayNoteDraft}
+              onSave={saveTodayNote}
+              savedAt={todayNoteSavedAt}
+            />
 
             <TaskCollection
               emptyState="Nothing closed today yet."
@@ -690,6 +752,7 @@ function App() {
         ) : primaryTab === "done" ? (
           <TaskCollection
             emptyState="No finished tasks yet."
+            onDelete={deleteTask}
             onSelect={setSelectedTaskId}
             onSetStatus={handleSetTaskStatus}
             onToggleToday={handleToggleToday}
@@ -770,6 +833,7 @@ function TaskCollection({
   onSelect,
   onToggleToday,
   onSetStatus,
+  onDelete,
 }) {
   return (
     <section className="panel">
@@ -784,6 +848,7 @@ function TaskCollection({
             <TaskCard
               isSelected={selectedTaskId === task.id}
               key={task.id}
+              onDelete={onDelete ? () => onDelete(task.id) : null}
               onSelect={() => onSelect(task.id)}
               onSetStatus={(status) => onSetStatus(task.id, status)}
               onToggleToday={() => onToggleToday(task.id)}
@@ -837,6 +902,7 @@ function AreaSectionPanel({
                   <TaskCard
                     isSelected={selectedTaskId === task.id}
                     key={task.id}
+                    onDelete={null}
                     onReorderDrop={
                       onReorderSection && section.tasks.length > 1
                         ? (draggedTaskId, targetTaskId) =>
@@ -873,6 +939,7 @@ function TaskCard({
   onToggleToday,
   onSetStatus,
   onReorderDrop,
+  onDelete,
 }) {
   const statusTone = getTimingTone(task);
   const isPlannedToday = task.plannedFor === todayKey;
@@ -942,6 +1009,18 @@ function TaskCard({
           >
             {task.status === "done" ? "Reopen" : "Close"}
           </button>
+          {onDelete ? (
+            <button
+              className="ghost-button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete();
+              }}
+              type="button"
+            >
+              Delete
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1153,6 +1232,36 @@ function TaskInspector({
   );
 }
 
+function DailyNotePanel({ draft, onChange, onSave, isSaving, savedAt }) {
+  return (
+    <section className="panel">
+      <header className="panel__header">
+        <h3>Today notes</h3>
+        {savedAt ? <span className="panel__meta">Saved {formatSavedTime(savedAt)}</span> : null}
+      </header>
+
+      <div className="daily-note-panel">
+        <textarea
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Write down notes, outcomes, or anything you want to remember from today."
+          rows={6}
+          value={draft}
+        />
+        <div className="daily-note-panel__actions">
+          <button
+            className="primary-button"
+            disabled={isSaving}
+            onClick={onSave}
+            type="button"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ProjectsBoard({ openProjects, doneProjects, taskCountByProjectId, onCreateProject, onUpdateProject, isSaving }) {
   const [projectTitle, setProjectTitle] = useState("");
   const [projectArea, setProjectArea] = useState("work");
@@ -1331,6 +1440,10 @@ function getAvailableTaskTypes(area) {
     return ["blocked", "deadline", "backlog"];
   }
   return ["main", "blocked", "deadline", "backlog"];
+}
+
+function getDefaultCaptureTaskType(area) {
+  return area === "life" ? "backlog" : "main";
 }
 
 function getPrimaryTabCount(tabId, todayCount, openCount, doneCount) {
@@ -1560,6 +1673,13 @@ function formatRelativeMoment(value) {
   }
 
   return deltaHours >= 0 ? `in ${absoluteHours}h` : `${absoluteHours}h ago`;
+}
+
+function formatSavedTime(value) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 async function getApiError(response, fallback) {

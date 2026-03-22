@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
 import sqlalchemy as sa
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -42,6 +42,13 @@ projects = sa.Table(
     sa.Column("area", sa.String(20), nullable=False),
     sa.Column("status", sa.String(20), nullable=False, server_default="open"),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+daily_notes = sa.Table(
+    "daily_notes",
+    metadata,
+    sa.Column("note_date", sa.Date, primary_key=True),
+    sa.Column("content", sa.Text, nullable=False, server_default=""),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
 tasks = sa.Table(
@@ -135,6 +142,16 @@ class TaskOut(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class DailyNoteUpdate(BaseModel):
+    content: str = ""
+
+
+class DailyNoteOut(BaseModel):
+    note_date: date
+    content: str
+    updated_at: datetime
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
@@ -191,6 +208,14 @@ def row_to_task(row) -> dict:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "completed_at": row.completed_at,
+    }
+
+
+def row_to_daily_note(row) -> dict:
+    return {
+        "note_date": row.note_date,
+        "content": row.content or "",
+        "updated_at": row.updated_at,
     }
 
 
@@ -669,6 +694,56 @@ def list_tasks():
     return [row_to_task(row) for row in rows]
 
 
+@app.get("/api/daily-notes/{note_date}", response_model=DailyNoteOut)
+def get_daily_note(note_date: date):
+    with engine.begin() as conn:
+        row = conn.execute(
+            sa.select(daily_notes).where(daily_notes.c.note_date == note_date)
+        ).first()
+
+        if row is None:
+            now = utcnow()
+            return {
+                "note_date": note_date,
+                "content": "",
+                "updated_at": now,
+            }
+
+    return row_to_daily_note(row)
+
+
+@app.put("/api/daily-notes/{note_date}", response_model=DailyNoteOut)
+def upsert_daily_note(note_date: date, update: DailyNoteUpdate):
+    now = utcnow()
+    content = update.content or ""
+
+    with engine.begin() as conn:
+        existing = conn.execute(
+            sa.select(daily_notes).where(daily_notes.c.note_date == note_date)
+        ).first()
+
+        if existing is None:
+            conn.execute(
+                sa.insert(daily_notes).values(
+                    note_date=note_date,
+                    content=content,
+                    updated_at=now,
+                )
+            )
+        else:
+            conn.execute(
+                sa.update(daily_notes)
+                .where(daily_notes.c.note_date == note_date)
+                .values(content=content, updated_at=now)
+            )
+
+        saved = conn.execute(
+            sa.select(daily_notes).where(daily_notes.c.note_date == note_date)
+        ).first()
+
+    return row_to_daily_note(saved)
+
+
 @app.post("/api/tasks", response_model=TaskOut)
 def create_task(task: TaskCreate):
     now = utcnow()
@@ -752,6 +827,15 @@ def update_task(task_id: int, update: TaskUpdate):
         updated = get_task_or_404(conn, task_id)
 
     return row_to_task(updated)
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+    with engine.begin() as conn:
+        current = get_task_or_404(conn, task_id)
+        conn.execute(sa.delete(tasks).where(tasks.c.id == task_id))
+
+    return Response(status_code=204)
 
 
 @app.get("/api/healthz")

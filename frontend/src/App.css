@@ -147,6 +147,11 @@
   text-align: center;
 }
 
+.panel__meta {
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
 .nav-subitem {
   padding: 0.38rem 0.72rem;
 }
@@ -310,6 +315,21 @@
 .panel__body {
   display: grid;
   gap: 0.55rem;
+}
+
+.daily-note-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.daily-note-panel textarea {
+  min-height: 9rem;
+  line-height: 1.5;
+}
+
+.daily-note-panel__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .today-area-panel__sections {
