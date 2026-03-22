@@ -160,6 +160,36 @@ def get_task_or_404(conn, task_id: int):
     return row
 
 
+def has_children(conn, task_id: int) -> bool:
+    child = conn.execute(
+        sa.select(tasks.c.id).where(tasks.c.parent_id == task_id).limit(1)
+    ).first()
+    return child is not None
+
+
+def has_open_children(conn, task_id: int) -> bool:
+    child = conn.execute(
+        sa.select(tasks.c.id)
+        .where(tasks.c.parent_id == task_id, tasks.c.status == "open")
+        .limit(1)
+    ).first()
+    return child is not None
+
+
+def validate_parent_assignment(conn, task_id: Optional[int], parent_id: int):
+    parent = get_task_or_404(conn, parent_id)
+    if parent.parent_id is not None:
+        raise HTTPException(status_code=400, detail="Subtasks cannot have subtasks")
+
+    if task_id is not None and has_children(conn, task_id):
+        raise HTTPException(
+            status_code=400,
+            detail="A task with subtasks cannot become a subtask",
+        )
+
+    return parent
+
+
 def ensure_tasks_schema():
     inspector = sa.inspect(engine)
     table_names = inspector.get_table_names()
@@ -425,7 +455,8 @@ def create_task(task: TaskCreate):
 
     with engine.begin() as conn:
         if values["parent_id"] is not None:
-            get_task_or_404(conn, values["parent_id"])
+            parent = validate_parent_assignment(conn, None, values["parent_id"])
+            values["area"] = parent.area
         result = conn.execute(sa.insert(tasks).values(**values))
         task_id = result.inserted_primary_key[0]
         created = get_task_or_404(conn, task_id)
@@ -455,10 +486,19 @@ def update_task(task_id: int, update: TaskUpdate):
         current_area = current.area
         current_task_type = current.task_type
 
+        if values.get("status") == "done" and has_open_children(conn, task_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Finish or reopen all subtasks before marking the parent task done",
+            )
+
         if "parent_id" in values and values["parent_id"] is not None:
             if values["parent_id"] == task_id:
                 raise HTTPException(status_code=400, detail="Task cannot parent itself")
-            get_task_or_404(conn, values["parent_id"])
+            parent = validate_parent_assignment(conn, task_id, values["parent_id"])
+            values["area"] = parent.area
+        elif current.parent_id is not None:
+            values["area"] = get_task_or_404(conn, current.parent_id).area
 
         effective_area = values.get("area", current_area)
         effective_task_type = values.get("task_type", current_task_type)
