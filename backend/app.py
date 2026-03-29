@@ -1,3 +1,4 @@
+import os
 import pathlib
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Literal, Optional
@@ -11,12 +12,20 @@ from starlette.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="External Brain backend")
 
-ALLOW_ORIGINS = [
+DEFAULT_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS")
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
+if FRONTEND_ORIGINS:
+    ALLOW_ORIGINS = [origin.strip() for origin in FRONTEND_ORIGINS.split(",") if origin.strip()]
+elif FRONTEND_ORIGIN:
+    ALLOW_ORIGINS = [FRONTEND_ORIGIN]
+else:
+    ALLOW_ORIGINS = DEFAULT_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,10 +34,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-engine = sa.create_engine(
-    "sqlite:///./app.db",
-    connect_args={"check_same_thread": False},
+DEFAULT_DATABASE_URL = (
+    "postgresql+psycopg://neondb_owner:npg_9cQhAmEBiZu3@"
+    "ep-nameless-tree-afsairo6-pooler.c-2.us-west-2.aws.neon.tech/"
+    "neondb?sslmode=require&channel_binding=require"
 )
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or DEFAULT_DATABASE_URL
+if DATABASE_URL:
+    engine = sa.create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+    )
+else:
+    engine = sa.create_engine(
+        "sqlite:///./app.db",
+        connect_args={"check_same_thread": False},
+    )
 
 VALID_STATUSES = {"open", "done"}
 VALID_TYPES = {"main", "backlog", "blocked", "deadline"}
@@ -578,18 +601,19 @@ def seed_initial_data():
         ]
 
         for row in seed_rows:
+            task_values = {
+                "due_at": None,
+                "follow_up_at": None,
+                "planned_for": None,
+                "today_position": None,
+                "project_id": None,
+                "created_at": now,
+                "updated_at": now,
+                "completed_at": None,
+            }
+            task_values.update(row)
             conn.execute(
-                sa.insert(tasks).values(
-                    due_at=None,
-                    follow_up_at=None,
-                    planned_for=None,
-                    today_position=None,
-                    project_id=None,
-                    created_at=now,
-                    updated_at=now,
-                    completed_at=None,
-                    **row,
-                )
+                sa.insert(tasks).values(**task_values)
             )
 
 

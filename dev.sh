@@ -62,6 +62,11 @@ serve_backend() {
   exec uvicorn app:app --reload --port 8000
 }
 
+prepare_runtime() {
+  build_frontend
+  ensure_venv
+}
+
 is_running() {
   if [ ! -f "$PID_FILE" ]; then
     return 1
@@ -89,9 +94,11 @@ start_background() {
     return 0
   fi
 
-  build_frontend
-  ensure_venv
+  prepare_runtime
+  launch_background
+}
 
+launch_background() {
   notice "Starting background server at http://localhost:8000 ..."
   cd "$BACKEND_DIR"
   nohup "$BACKEND_DIR/.venv/bin/uvicorn" app:app --host 127.0.0.1 --port 8000 >>"$LOG_FILE" 2>&1 &
@@ -125,8 +132,13 @@ stop_background() {
 }
 
 restart_background() {
-  stop_background
-  start_background
+  if is_running; then
+    prepare_runtime
+    stop_background
+    launch_background
+  else
+    start_background
+  fi
 }
 
 status_background() {

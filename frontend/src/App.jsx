@@ -74,38 +74,51 @@ function App() {
     setLoading(true);
     setError("");
 
-    try {
-      const [taskResponse, projectResponse, noteResponse] = await Promise.all([
-        fetch(`${API}/tasks`),
-        fetch(`${API}/projects`),
-        fetch(`${API}/daily-notes/${todayKey}`),
-      ]);
+    const maxAttempts = 20;
+    let lastError = null;
 
-      if (!taskResponse.ok) {
-        throw new Error("Failed to load tasks.");
-      }
-      if (!projectResponse.ok) {
-        throw new Error("Failed to load projects.");
-      }
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const [taskResponse, projectResponse, noteResponse] = await Promise.all([
+          fetch(`${API}/tasks`),
+          fetch(`${API}/projects`),
+          fetch(`${API}/daily-notes/${todayKey}`),
+        ]);
 
-      const [taskData, projectData] = await Promise.all([
-        taskResponse.json(),
-        projectResponse.json(),
-      ]);
-      let noteData = { content: "", updated_at: null };
-      if (noteResponse.ok) {
-        noteData = await noteResponse.json();
-      }
+        if (!taskResponse.ok) {
+          throw new Error("Failed to load tasks.");
+        }
+        if (!projectResponse.ok) {
+          throw new Error("Failed to load projects.");
+        }
 
-      setTasks(taskData.map(fromApiTask));
-      setProjects(projectData.map(fromApiProject));
-      setTodayNoteDraft(noteData.content || "");
-      setTodayNoteSavedAt(noteData.updated_at || null);
-    } catch (fetchError) {
-      setError(fetchError.message || "Failed to load app data.");
-    } finally {
-      setLoading(false);
+        const [taskData, projectData] = await Promise.all([
+          taskResponse.json(),
+          projectResponse.json(),
+        ]);
+        let noteData = { content: "", updated_at: null };
+        if (noteResponse.ok) {
+          noteData = await noteResponse.json();
+        }
+
+        setTasks(taskData.map(fromApiTask));
+        setProjects(projectData.map(fromApiProject));
+        setTodayNoteDraft(noteData.content || "");
+        setTodayNoteSavedAt(noteData.updated_at || null);
+        setLoading(false);
+        return;
+      } catch (fetchError) {
+        lastError = fetchError;
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, 1000);
+          });
+        }
+      }
     }
+
+    setError(lastError?.message || "Failed to load app data.");
+    setLoading(false);
   }, [todayKey]);
 
   useEffect(() => {

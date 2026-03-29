@@ -181,7 +181,7 @@ The app is split into two parts:
   - CSS
 - `backend/`
   - FastAPI
-  - SQLite
+  - SQLite locally, Postgres remotely
   - SQLAlchemy Core
 
 ### Frontend
@@ -216,7 +216,7 @@ It provides:
 - task CRUD
 - project CRUD
 - daily note storage
-- SQLite schema setup and migration
+- schema setup and migration
 - serving the built frontend in production-style mode
 
 Current API surface includes:
@@ -246,6 +246,31 @@ Important persisted objects:
   - title, area, status
 - `daily_notes`
   - one saved note per day
+
+## Database Modes
+
+The backend supports two database modes:
+
+- default: the same Neon/Postgres database used by `3000r`
+- override: any Postgres database via `DATABASE_URL`
+- local fallback only if you explicitly point `DATABASE_URL` at SQLite
+
+This is the intended path for moving from a local-only app to a publicly hosted setup.
+
+Example override configuration:
+
+```bash
+cd backend
+export DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST/DB?sslmode=require'
+export FRONTEND_ORIGIN='https://your-frontend-domain.example'
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Notes:
+
+- the repo now includes a built-in Neon connection string, matching `3000r`
+- `DATABASE_URL` still overrides that if you want to move later
+- `FRONTEND_ORIGIN` or `FRONTEND_ORIGINS` should be set when the frontend is hosted outside localhost
 
 ## Local Setup
 
